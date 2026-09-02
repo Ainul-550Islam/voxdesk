@@ -595,3 +595,4 @@ async def test_a_throttled_sync_is_rescheduled_not_failed(
     assert sync.status is CrmSyncStatus.PENDING
     assert sync.attempt_count == 0, "throttling must not spend an attempt"
     assert sync.next_attempt_at is not None
+

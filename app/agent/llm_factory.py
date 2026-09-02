@@ -115,3 +115,4 @@ def resolve(tenant) -> LLMChoice:
     if tenant.llm_provider and tenant.llm_model:
         return LLMChoice(tenant.llm_provider, tenant.llm_model, 300, "custom")
     return PRESETS["natural"]      # ডিফল্ট: সবচেয়ে মানুষের মতো
+

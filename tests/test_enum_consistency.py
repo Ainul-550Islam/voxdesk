@@ -1142,3 +1142,4 @@ async def test_every_subscription_status_round_trips_through_the_database(
 
     stored = (await db.execute(_select(Subscription.status))).scalars().all()
     assert set(stored) == set(SubscriptionStatus)
+

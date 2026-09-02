@@ -315,3 +315,4 @@ async def count_searchable_chunks(session: AsyncSession, *, tenant_id) -> int:
 
     query = _base_query(tenant_id).with_only_columns(func.count(KnowledgeChunk.id))
     return int((await session.execute(query)).scalar() or 0)
+

@@ -377,3 +377,4 @@ def _note_body(activity: NormalizedActivity) -> str:
     if activity.body:
         parts.append(activity.body)
     return "\n\n".join(p for p in parts if p)
+

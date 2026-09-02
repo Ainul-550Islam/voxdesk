@@ -481,3 +481,4 @@ async def pending_documents(
         .scalars()
         .all()
     )
+

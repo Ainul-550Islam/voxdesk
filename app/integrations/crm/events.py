@@ -253,3 +253,4 @@ def appointment_payload(appointment: Any) -> dict:
         "starts_at": appointment.starts_at.isoformat() if appointment.starts_at else None,
         "ends_at": appointment.ends_at.isoformat() if appointment.ends_at else None,
     }
+

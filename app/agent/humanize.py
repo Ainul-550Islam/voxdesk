@@ -260,3 +260,4 @@ def vary_greeting(base: str, business_name: str, agent_name: str) -> str:
         f"Hi, {business_name}, this is {agent_name}. What can I help you with today?",
     ]
     return random.choice(templates)
+

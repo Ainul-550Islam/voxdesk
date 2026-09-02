@@ -218,3 +218,4 @@ def downgrade() -> None:
         op.drop_table(table)
     for enum in (speaker, lead_status, call_direction, call_status):
         enum.drop(op.get_bind(), checkfirst=True)
+

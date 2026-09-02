@@ -214,3 +214,4 @@ def _excerpt(body: str) -> str:
         return ""
     cleaned = safe_message(body.strip().replace("\n", " "))[:180]
     return f": {cleaned}" if cleaned else ""
+

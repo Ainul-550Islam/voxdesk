@@ -165,3 +165,4 @@ async def on_appointment_rescheduled(
         },
         discriminator=f"rescheduled:{appointment.starts_at.isoformat()}",
     )
+

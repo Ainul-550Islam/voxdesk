@@ -94,3 +94,4 @@ TEAM_MANAGEMENT: frozenset[Permission] = frozenset({
     Permission.USER_UPDATE,
     Permission.USER_ROLE_CHANGE,
 })
+

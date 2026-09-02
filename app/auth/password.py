@@ -114,3 +114,4 @@ def needs_rehash(password_hash: str) -> bool:
     except (IndexError, ValueError):
         return True
     return cost < BCRYPT_ROUNDS
+

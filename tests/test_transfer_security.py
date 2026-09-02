@@ -179,3 +179,4 @@ async def test_transfer_logs_carry_correlation_ids_and_no_secrets(db):
     from app.core.config import settings
     assert settings.jwt_secret not in blob
     assert settings.twilio_auth_token not in blob or not settings.twilio_auth_token
+

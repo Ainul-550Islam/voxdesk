@@ -458,3 +458,4 @@ def _default_whisper(tenant: Tenant, reason: str) -> str:
     if safe:
         return f"Transfer from your A I receptionist. Reason: {safe}"
     return "Transfer from your A I receptionist."
+

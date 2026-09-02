@@ -718,3 +718,4 @@ class TestInboundIsNeverBlocked:
         # ...but an inbound call is still finalized and metered.
         call = await make_call(db, tenant_a, duration=180.0)
         assert await billing_hooks.on_call_finalized(db, tenant_a, call) is True
+

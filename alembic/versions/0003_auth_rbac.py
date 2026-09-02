@@ -129,3 +129,4 @@ def downgrade() -> None:
 
     audit_action.drop(bind, checkfirst=True)
     user_role.drop(bind, checkfirst=True)
+

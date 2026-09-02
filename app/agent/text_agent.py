@@ -181,3 +181,4 @@ class TextAgent:
             "provider": self.provider,
             "model": self.model,
         }
+

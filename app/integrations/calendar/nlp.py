@@ -346,3 +346,4 @@ def _part_of_day(text: str) -> str:
         if re.search(rf"\b{re.escape(phrase)}\b", text):
             return part
     return "any"
+

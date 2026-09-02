@@ -293,3 +293,4 @@ def _retry_after(response: httpx.Response) -> float | None:
     except (TypeError, ValueError):
         return None
     return min(value, 300.0) if value >= 0 else None
+

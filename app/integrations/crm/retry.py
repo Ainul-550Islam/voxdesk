@@ -163,3 +163,4 @@ def configure_limiter_from_settings() -> None:
 
     limiter.rate_per_second = settings.crm_rate_limit_per_second
     limiter.burst = settings.crm_rate_limit_burst
+

@@ -19,8 +19,46 @@ import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 from app.integrations.calendar.timezones import UTC, as_utc
+
+
+def _safe_meeting_url(value: str | None) -> str | None:
+    """
+    Drop a `meeting_url` we would refuse to link to.
+
+    Providers hand us this string verbatim -- Google's `hangoutLink`,
+    Microsoft's `joinUrl`, and for Cal.com `meetingUrl` **or the free-text
+    `location` field**, which is not required to be a URL at all. A value of
+    `javascript:...` rendered as an href in the dashboard is stored XSS, so
+    the unusable ones are normalised away here, at the single point every
+    provider's response passes through on its way into an Appointment.
+
+    https only: every real provider issues https join links, and there is no
+    case for sending a user to a plaintext meeting URL. Anything else -- a
+    non-URL location string like "Office, 2nd floor", a protocol-relative
+    `//host`, or a dangerous scheme -- becomes None, which the model already
+    treats as "no meeting link".
+
+    This is a normalisation, not a validation: it never raises, because a bad
+    URL must not fail an otherwise valid booking. The dashboard applies the
+    same allowlist independently -- neither layer trusts the other.
+    """
+    if not isinstance(value, str):
+        return None
+    # Browsers ignore leading control characters in a URL, so strip them
+    # before inspecting the scheme.
+    cleaned = value.strip().strip("\x00\t\n\r\x0b\x0c")
+    if not cleaned or cleaned.startswith("//"):
+        return None
+    try:
+        parsed = urlparse(cleaned)
+    except ValueError:
+        return None
+    if parsed.scheme.lower() != "https" or not parsed.netloc:
+        return None
+    return cleaned
 
 
 def _require_utc(value: datetime, name: str) -> datetime:
@@ -172,6 +210,7 @@ class CalendarEvent:
     def __post_init__(self):
         object.__setattr__(self, "start", _require_utc(self.start, "start"))
         object.__setattr__(self, "end", _require_utc(self.end, "end"))
+        object.__setattr__(self, "meeting_url", _safe_meeting_url(self.meeting_url))
 
 
 @dataclass(frozen=True)
@@ -315,3 +354,4 @@ def booking_idempotency_key(
     start_utc = _require_utc(start, "start")
     basis = f"{tenant_id}|{who}|{start_utc.isoformat()}"
     return hashlib.sha256(basis.encode()).hexdigest()[:48]
+

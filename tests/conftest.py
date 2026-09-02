@@ -805,3 +805,4 @@ def stripe_event(event_type: str, obj: dict, *, event_id=None, created=None) -> 
         "created": created if created is not None else int(_t.time()),
         "data": {"object": obj},
     }).encode()
+

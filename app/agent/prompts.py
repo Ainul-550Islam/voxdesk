@@ -117,3 +117,4 @@ def build_system_prompt(
         prompt = f"{prompt}\n\n{knowledge_context}\n"
 
     return prompt + PROVIDER_TUNING.get(provider, "")
+

@@ -83,3 +83,4 @@ class CalendarClient:
         except Exception as exc:
             log.error("calendar.create_failed", error=str(exc))
             return None
+

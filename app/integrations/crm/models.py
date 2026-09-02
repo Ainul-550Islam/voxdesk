@@ -177,3 +177,4 @@ class HealthResult:
     provider: str
     latency_ms: float
     safe_message: str = ""
+

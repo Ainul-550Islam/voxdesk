@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -105,6 +105,93 @@ async def list_tenants(
     tenant in the deployment to any anonymous caller.
     """
     return [ctx.tenant]
+
+
+# ----------------------------------------------------- agent configuration ----
+#
+# STEP 8 phase 2. `PATCH /tenants/{id}/voice` has existed since v0.5 and writes
+# six live-tuning fields, but **nothing could read the agent's configuration
+# back**: `TenantOut` carries seven columns and `/auth/me` five, and neither
+# includes the greeting, the prompt, the model or any behaviour setting. A page
+# that lets you edit a prompt it cannot display is not a page, so this is the
+# read half of an API that was already half-written.
+#
+# It is a projection of columns that already exist on `Tenant`. No schema
+# change, no migration, no new state, and no business logic: the agent pipeline
+# keeps reading the same columns it always did.
+
+
+class AgentConfigOut(BaseModel):
+    """
+    Everything the dashboard needs to render the agent settings page.
+
+    **Deliberately omits every credential-shaped column on `Tenant`.**
+    `crm_api_key`, `a2p_brand_sid`, `a2p_campaign_sid` and the Twilio
+    credentials are not here and must never be added: this response is
+    readable by any role with `tenant:read`, which is every role including
+    viewer. The CRM connection is surfaced by `/api/integrations/crm`, which
+    reports health without ever returning the secret itself (STEP 5).
+    """
+
+    # Identity
+    id: uuid.UUID
+    name: str
+    industry: str
+    twilio_number: str
+
+    # Personality
+    agent_name: str
+    greeting: str
+    system_prompt_extra: str
+
+    # Model
+    llm_preset: str | None
+    llm_provider: str | None
+    llm_model: str | None
+    temperature: float
+
+    # Voice / speech behaviour
+    voice_id: str | None
+    language: str
+    humanize: bool
+    vad_stop_secs: float
+    speech_speed: float
+
+    # Call behaviour
+    timezone: str
+    business_open: time
+    business_close: time
+    appointment_minutes: int
+    escalation_number: str | None
+    notify_sms_number: str | None
+
+    # Compliance
+    record_calls: bool
+    recording_disclaimer: str
+
+    # Channels
+    sms_enabled: bool
+    whatsapp_enabled: bool
+    ivr_enabled: bool
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/tenants/{tenant_id}/agent", response_model=AgentConfigOut)
+async def get_agent_config(
+    tenant_id: uuid.UUID,
+    ctx: TenantContext = Depends(scoped_permission(Permission.TENANT_READ)),
+):
+    """
+    The agent's current configuration.
+
+    `scoped_permission` has already proved `tenant_id == ctx.tenant_id` and
+    audited the attempt if it did not, so the authenticated object is returned
+    rather than anything re-fetched by the client-supplied id. The path
+    parameter is a consistency check, never a selector.
+    """
+    return ctx.tenant
 
 
 # --------------------------------------------------------- AI নির্বাচন ----
@@ -743,3 +830,4 @@ async def tenant_compliance(
         "recording_enabled": tenant.record_calls,
         "language": get_profile(tenant.language).name,
     }
+

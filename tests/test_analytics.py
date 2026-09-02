@@ -752,3 +752,4 @@ class TestAggregationShape:
 
         assert totals["total"] == 5
         assert len(statements) == 1, statements
+

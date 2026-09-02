@@ -211,3 +211,4 @@ class GoogleServiceAccountProvider(CalendarProvider):
             await self._client().list_busy(start, start + timedelta(hours=1))
 
         return await self._timed_health_check(probe)
+

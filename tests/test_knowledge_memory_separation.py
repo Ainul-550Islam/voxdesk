@@ -210,3 +210,4 @@ def test_no_ingestion_path_accepts_a_transcript():
     names = {member.name for member in DocumentSourceType}
     assert names == {"UPLOAD", "TEXT", "URL"}
     assert not {"TRANSCRIPT", "CALL", "CONVERSATION", "MEMORY"} & names
+

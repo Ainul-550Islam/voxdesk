@@ -706,3 +706,4 @@ class TestAdjustments:
             )
         ).scalar()
         assert raw == -540
+

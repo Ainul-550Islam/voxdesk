@@ -130,3 +130,4 @@ def test_openai_embedder_requires_a_key():
 
     with pytest.raises(EmbeddingError):
         OpenAIEmbedder(api_key="")
+

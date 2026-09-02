@@ -365,3 +365,4 @@ def downgrade() -> None:
     # PostgreSQL has no `ALTER TYPE ... DROP VALUE`, and rebuilding the type
     # would require rewriting every audit_logs row. Leaving unused members in
     # an enum is harmless; destroying an audit trail to tidy one up is not.
+

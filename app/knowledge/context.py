@@ -281,3 +281,4 @@ def summarize_for_tool(chunks: list[RetrievedChunk], *, max_chars: int = 900) ->
         parts.append(body)
         used += len(body)
     return "\n---\n".join(parts)
+

@@ -633,3 +633,4 @@ async def delete_integration(
     )
     await session.commit()
     return None
+

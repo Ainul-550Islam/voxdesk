@@ -667,3 +667,4 @@ WHERE credentials_key_id = '2026a';
 -- Backlog age
 SELECT min(created_at), count(*) FROM crm_syncs WHERE status = 'PENDING';
 ```
+

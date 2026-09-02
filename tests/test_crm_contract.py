@@ -442,3 +442,4 @@ async def test_a_success_response_with_no_id_is_a_failure_not_a_success(
 
     with pytest.raises(CrmError):
         await adapter.upsert_contact(CONTACT)
+

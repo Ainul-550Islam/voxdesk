@@ -256,3 +256,4 @@ async def run_voice_agent(
         await runner.run(task)
     finally:
         await _persist_turns()
+

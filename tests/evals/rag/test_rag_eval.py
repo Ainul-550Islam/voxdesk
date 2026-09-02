@@ -294,3 +294,4 @@ async def test_isolation_summary(db, corpus, capsys):
             f"{len(leaks)} leaks {leaks or ''}"
         )
     assert not leaks
+

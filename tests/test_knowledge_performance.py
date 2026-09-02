@@ -269,3 +269,4 @@ async def test_the_timeout_is_enforced_even_when_retrieval_hangs(db, corpus, cap
     assert results == []
     # Generous ceiling: the assertion is "it returned", not "it was instant".
     assert elapsed < 2000
+

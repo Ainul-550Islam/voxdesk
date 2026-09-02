@@ -255,3 +255,4 @@ def apply_provider_status(
         duration_seconds=duration_seconds,
         source=source,
     )
+

@@ -85,3 +85,4 @@ def make_docx(blocks: list[tuple[str, str]]) -> bytes:
     buffer = io.BytesIO()
     document.save(buffer)
     return buffer.getvalue()
+

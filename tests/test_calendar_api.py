@@ -1250,3 +1250,4 @@ class TestServiceOverhead:
             print(f"  hung provider, 200 ms budget -> returned at {elapsed:.2f} ms")
         assert result["outcome"] == "FAILED"
         assert elapsed < 1000
+

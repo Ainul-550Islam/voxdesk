@@ -252,3 +252,4 @@ def elapsed_fraction(period: BillingPeriod, moment: datetime | None = None) -> f
     return (moment - period.start).total_seconds() / (
         period.end - period.start
     ).total_seconds()
+

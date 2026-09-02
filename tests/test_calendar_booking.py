@@ -1098,3 +1098,4 @@ class TestReminders:
             db, tenant, booking(tenant, ny(date(2026, 6, 23), 10)), now=ny(TUESDAY, 6)
         )
         assert (await db.execute(select(func.count(Reminder.id)))).scalar() == 0
+

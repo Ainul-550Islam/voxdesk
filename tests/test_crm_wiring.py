@@ -971,3 +971,4 @@ class TestStructuredLogging:
         await db.commit()
 
         assert any(name == "crm.event_duplicate" for name, _ in captured)
+

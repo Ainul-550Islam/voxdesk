@@ -283,3 +283,4 @@ async def test_audit_log_never_stores_the_password(client, db, owner_a):
     blob = " ".join(f"{r.actor_email} {r.detail}" for r in rows)
     assert TEST_PASSWORD not in blob
     assert "Wrong-Password-1!" not in blob
+

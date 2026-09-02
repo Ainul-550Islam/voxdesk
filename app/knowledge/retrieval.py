@@ -187,3 +187,4 @@ async def retrieve_with_timeout(
             "retrieval.failed", tenant_id=str(tenant_id), error=str(exc)[:200]
         )
         return []
+

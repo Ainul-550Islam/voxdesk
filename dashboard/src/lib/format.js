@@ -173,3 +173,56 @@ export function todayIn(timeZone) {
   }).format(new Date())
   return parts
 }
+
+/**
+ * The one URL allowlist for links whose target came from outside VoxDesk.
+ *
+ * `meeting_url` is written straight from a calendar provider payload
+ * (`hangoutLink`, `joinUrl`, and for Cal.com `meetingUrl` **or the free-text
+ * `location` field**), and `hosted_invoice_url` comes from Stripe. None of
+ * those are ours, and an `href` of `javascript:...` executes on click -- so a
+ * hostile value stored by a provider becomes stored XSS in our dashboard.
+ * A backend response is not a trust boundary; this is defence in depth.
+ *
+ * Returns the URL when it is safe to navigate to, otherwise `null` so the
+ * caller renders its ordinary "no link" state.
+ *
+ * **https only.** Every real provider issues https join links, and there is
+ * no product case for sending a user to a plaintext meeting URL. `http:` is
+ * therefore rejected too, rather than allowed "just in case".
+ *
+ * Rejected: `javascript:`, `data:`, `vbscript:`, `file:`, protocol-relative
+ * `//host` (which inherits the page scheme and is a real open-redirect
+ * vector), unknown schemes, relative paths, whitespace-obfuscated schemes,
+ * and anything that is not a string.
+ */
+export function safeExternalUrl(value) {
+  if (typeof value !== 'string') return null
+
+  // Leading/trailing whitespace and control characters are stripped before
+  // parsing: browsers ignore them in an href, so `\njavascript:alert(1)`
+  // would otherwise pass a naive prefix test and still execute.
+  const trimmed = value.replace(/[\u0000-\u0020\u007f-\u009f]+/g, '')
+  if (!trimmed) return null
+
+  // Protocol-relative URLs have no scheme of their own; reject before the
+  // parser resolves them against the current origin.
+  if (trimmed.startsWith('//')) return null
+
+  let parsed
+  try {
+    // `new URL` with no base rejects relative values outright, and normalises
+    // the scheme -- so `JavaScript:` and `java\tscript:` cannot slip past a
+    // string comparison.
+    parsed = new URL(trimmed)
+  } catch {
+    return null                       // malformed: not a link, not a crash
+  }
+
+  if (parsed.protocol !== 'https:') return null
+
+  // Return the original trimmed string, not `parsed.href`: re-serialising
+  // would silently rewrite the provider's URL (adding a trailing slash,
+  // re-encoding the query) and the link must point exactly where they said.
+  return trimmed
+}

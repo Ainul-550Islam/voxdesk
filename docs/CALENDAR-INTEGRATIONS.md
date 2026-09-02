@@ -676,3 +676,4 @@ WHERE token_expires_at < now() + interval '1 day';
 7. **No recurring appointments.**
 8. **Availability is computed per request** with no caching. Fine at current
    scale; a busy tenant polling availability will hit the provider each time.
+

@@ -37,7 +37,10 @@ const NAV = [
   {
     group: 'Configuration',
     items: [
-      { path: '/agent', label: 'Agent', icon: '✦', permission: P.TENANT_UPDATE },
+      // `tenant:read`, not `tenant:update`: every role may see how the agent
+      // is configured. The write controls inside the page are gated on
+      // `tenant:update` separately.
+      { path: '/agent', label: 'Agent', icon: '✦', permission: P.TENANT_READ },
       { path: '/knowledge', label: 'Knowledge', icon: '▣', permission: P.KNOWLEDGE_READ },
       {
         path: '/integrations', label: 'Integrations', icon: '⇄',
@@ -167,3 +170,4 @@ export default function Shell({ me, can, path, title, onSignOut, children }) {
     </div>
   )
 }
+

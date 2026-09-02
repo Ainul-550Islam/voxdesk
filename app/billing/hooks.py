@@ -296,3 +296,4 @@ async def may_add_feature(
         return Entitlement(Decision.ALLOW, feature, reason="enforcement_disabled")
 
     return await check_feature_live(session, context, feature, adding=adding)
+

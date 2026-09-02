@@ -252,3 +252,4 @@ def chunk_sections(
 def chunk_text(text: str, config: ChunkingConfig | None = None) -> list[Chunk]:
     """Convenience wrapper for text with no section structure."""
     return chunk_sections([Section(text=text, metadata={})], config)
+

@@ -453,3 +453,4 @@ async def _push_to_crm(tenant: Tenant, call: Call) -> None:
         api_key=tenant.crm_api_key,
     )
     log.info("crm.sync", call=str(call.id), ok=ok)
+

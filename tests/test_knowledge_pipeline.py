@@ -357,3 +357,4 @@ async def test_a_job_for_a_missing_document_does_not_crash(
         "app.db.session.get_sessionmaker", lambda: sessionmaker_
     )
     await jobs.run_ingestion(uuid.uuid4())   # must simply log and return
+

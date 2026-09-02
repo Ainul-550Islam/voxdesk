@@ -17,7 +17,7 @@ import Transcript from '../components/Transcript'
 import { AsyncSection, StatusBadge } from '../components/ui'
 import { getCall, getTranscript } from '../lib/api'
 import {
-  formatDateTime, formatDuration, formatPhone, humanise,
+  formatDateTime, formatDuration, formatPhone, humanise, safeExternalUrl,
 } from '../lib/format'
 import { useApi } from '../lib/hooks'
 import { PERMISSIONS as P } from '../lib/permissions'
@@ -229,13 +229,15 @@ function OutcomePanel({ call, timezone }) {
             </div>
             <div className="kv__key">Customer</div>
             <div className="kv__value">{call.appointment.customer_name}</div>
-            {call.appointment.meeting_url && (
+            {/* Provider-supplied: allowlisted before it becomes an href.
+                An unsafe or malformed URL renders no Meeting row at all. */}
+            {safeExternalUrl(call.appointment.meeting_url) && (
               <>
                 <div className="kv__key">Meeting</div>
                 <div className="kv__value">
                   <a
-                    href={call.appointment.meeting_url}
-                    target="_blank" rel="noreferrer noopener"
+                    href={safeExternalUrl(call.appointment.meeting_url)}
+                    target="_blank" rel="noopener noreferrer"
                   >
                     Join link
                   </a>
@@ -307,3 +309,4 @@ function CrmPanel({ call, timezone }) {
     </section>
   )
 }
+

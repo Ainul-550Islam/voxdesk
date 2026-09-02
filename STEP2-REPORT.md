@@ -303,3 +303,4 @@ make dev
 পরের ধাপের জন্য বাকি: `transfer.py` → `pipeline.py` ওয়্যারিং,
 `seed_demo_tenant.py`-তে owner তৈরি যোগ, ড্যাশবোর্ডে AI-switch ড্রপডাউন,
 Fiverr gig + Upwork প্রোফাইল কপি, আর **আপনার CV রিরাইট** (এখনো বাকি আছে)।
+

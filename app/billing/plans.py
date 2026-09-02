@@ -501,3 +501,4 @@ def configuration_problems(plans: list[BillingPlan], *, is_production: bool) -> 
                 f"plan {plan.code!r} is offered annually but has no annual price id"
             )
     return problems
+

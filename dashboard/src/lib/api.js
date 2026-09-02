@@ -283,6 +283,10 @@ export const saveCrmIntegration = (provider, body) =>
   request(`${BASE}/integrations/crm/${provider}`, { method: 'PUT', body })
 export const disconnectCrmIntegration = (provider) =>
   request(`${BASE}/integrations/crm/${provider}/disconnect`, { method: 'POST' })
+// Distinct from disconnect: DELETE removes the row, disconnect only drops
+// the credentials and keeps the configuration. Returns 204.
+export const deleteCrmIntegration = (provider) =>
+  request(`${BASE}/integrations/crm/${provider}`, { method: 'DELETE' })
 
 export const listCalendarIntegrations = () => request(`${BASE}/calendar/integrations`)
 export const calendarProviders = () => request(`${BASE}/calendar/providers`)
@@ -321,10 +325,17 @@ export const cancelSubscription = (immediately, reason) =>
     method: 'POST',
     body: { immediately, reason },
   })
+// Re-reads the provider and rebuilds the usage summary; returns the refreshed
+// BillingStatusOut. No body -- the tenant comes from the token.
+export const reconcileBilling = () =>
+  request(`${BASE}/billing/reconcile`, { method: 'POST' })
 
 // ------------------------------------------------------------------ team ---
 
 export const listUsers = () => request(`${BASE}/team/users`)
+// The RBAC policy itself (`describe_roles()`): every role with its level and
+// full permission list, so the dashboard never hard-codes the role table.
+export const getRoles = () => request('/auth/roles')
 export const createUser = (body) =>
   request(`${BASE}/team/users`, { method: 'POST', body })
 export const setUserRole = (userId, role) =>
@@ -337,9 +348,17 @@ export const setUserActive = (userId, isActive) =>
 export const listAudit = (params) => request(`${BASE}/team/audit${query(params)}`)
 
 // ------------------------------------------------------------------ agent ---
+//
+// `getAgentConfig` is the read half of an API that was previously write-only:
+// `PATCH .../voice` has always existed, but nothing could read the greeting,
+// the prompt or the model back. The response never contains a credential --
+// see `AgentConfigOut` in `app/api/routes.py`.
 
+export const getAgentConfig = (tenantId) =>
+  request(`${BASE}/tenants/${tenantId}/agent`)
 export const listTenants = () => request(`${BASE}/tenants`)
 export const listLanguages = () => request(`${BASE}/languages`)
 export const listPresets = () => request(`${BASE}/llm/presets`)
 export const updateVoice = (tenantId, body) =>
   request(`${BASE}/tenants/${tenantId}/voice`, { method: 'PATCH', body })
+

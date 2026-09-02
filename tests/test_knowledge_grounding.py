@@ -231,3 +231,4 @@ def test_tool_summaries_are_bounded():
 
 def test_an_empty_result_summarizes_to_nothing():
     assert summarize_for_tool([]) == ""
+

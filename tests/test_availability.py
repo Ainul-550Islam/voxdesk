@@ -196,3 +196,4 @@ def test_prompt_demands_contractions(tenant):
 def test_prompt_tuned_per_provider(tenant, provider):
     """একই প্রম্পটে তিন AI একরকম আচরণ করে না -- তাই আলাদা STYLE NOTE।"""
     assert "STYLE NOTE" in build_system_prompt(tenant, provider)
+

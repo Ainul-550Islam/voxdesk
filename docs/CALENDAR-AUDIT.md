@@ -117,3 +117,4 @@ wrong (F3), so a large class of them is never created.
 current behaviour, so `tests/test_availability.py` continues to pass
 unmodified. The new layer does not call it. Retiring it is a follow-up once
 tenants have been migrated onto `CalendarIntegration` rows.
+

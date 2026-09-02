@@ -109,3 +109,4 @@ async def test_stream_crash_cannot_regress_an_already_completed_call(db):
     result = call_state.apply_status(call, CallStatus.FAILED, source="media_stream")
     assert result.applied is False
     assert call.status is CallStatus.COMPLETED
+

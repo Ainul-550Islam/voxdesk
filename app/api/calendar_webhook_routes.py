@@ -416,3 +416,4 @@ async def prune_receipts(session: AsyncSession, *, older_than_days: int = 30) ->
     )
     await session.commit()
     return result.rowcount or 0
+

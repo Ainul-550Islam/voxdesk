@@ -107,3 +107,4 @@ class NoopReranker:
 
 def get_reranker(enabled: bool = True) -> Reranker:
     return LexicalReranker() if enabled else NoopReranker()
+

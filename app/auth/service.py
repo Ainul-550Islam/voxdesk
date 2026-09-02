@@ -452,3 +452,4 @@ async def set_active(
     await session.commit()
     await session.refresh(target)
     return target
+

@@ -106,3 +106,4 @@ working; new ones are added alongside.
 
 The `estimated_value_usd` field stays in the API response so nothing breaks,
 but the dashboard stops displaying it — see `docs/DASHBOARD.md`.
+

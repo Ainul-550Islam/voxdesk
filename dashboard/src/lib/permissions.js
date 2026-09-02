@@ -35,6 +35,8 @@ export const PERMISSIONS = {
   USER_READ: 'user:read',
   USER_CREATE: 'user:create',
   USER_UPDATE: 'user:update',
+  USER_ROLE_CHANGE: 'user:role_change',
+  TENANT_READ: 'tenant:read',
   TENANT_UPDATE: 'tenant:update',
 }
 
@@ -54,3 +56,4 @@ export function makeCan(permissions) {
 
 /** A `can` that grants nothing. Used before `/auth/me` has resolved. */
 export const denyAll = makeCan([])
+

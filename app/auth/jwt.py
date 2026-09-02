@@ -141,3 +141,4 @@ def hash_refresh_token(plaintext: str) -> str:
 
 def refresh_expiry() -> datetime:
     return _now() + timedelta(days=settings.refresh_token_days)
+

@@ -618,3 +618,4 @@ def _id_of(value: Any) -> str | None:
         found = value.get("id")
         return str(found) if found else None
     return None
+

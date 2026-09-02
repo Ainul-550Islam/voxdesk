@@ -94,3 +94,4 @@ def downgrade() -> None:
         op.drop_column("calls", column)
 
     transfer_state.drop(bind, checkfirst=True)
+

@@ -96,3 +96,4 @@ async def run_reminder_tick(session: AsyncSession, *, dry_run: bool = False) -> 
     pending = await due_reminders(session)
     results = [await send_reminder(session, r, dry_run=dry_run) for r in pending]
     return {"sent": sum(1 for r in results if r.get("ok")), "total": len(results)}
+

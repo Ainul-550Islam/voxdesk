@@ -148,3 +148,4 @@ class JsonExtractor:
             sections=sections,
             metadata={"format": "json", "field_count": len(lines)},
         )
+

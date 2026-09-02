@@ -1,13 +1,20 @@
 # ---- Core ----
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-pydantic==2.10.4
+pydantic==2.10.5
 pydantic-settings==2.7.0
 python-dotenv==1.0.1
 
 # ---- Voice pipeline (the hard part) ----
 # Pipecat handles latency, barge-in and turn-taking for you.
-pipecat-ai[deepgram,openai,anthropic,google,elevenlabs,silero,twilio]==0.0.55
+#
+# The extras list deliberately omits `twilio`: pipecat-ai 0.0.55 does not
+# publish that extra (pip warned "does not provide the extra 'twilio'" and
+# silently ignored it). `pipecat/serializers/twilio.py` ships in the base
+# wheel and imports only stdlib, pydantic and internal pipecat modules, so
+# TwilioFrameSerializer keeps working. The Twilio REST SDK is pinned
+# separately below.
+pipecat-ai[deepgram,openai,anthropic,google,elevenlabs,silero]==0.0.55
 websockets==13.1
 
 # ---- Telephony ----
@@ -16,7 +23,7 @@ python-multipart==0.0.20     # Twilio posts webhooks as form data
 
 # ---- Text channels (SMS / WhatsApp share the voice tools) ----
 openai==1.59.6               # also drives Gemini via its OpenAI-compatible endpoint
-anthropic==0.42.0
+anthropic==0.45.2           # floor set by pipecat-ai 0.0.55 (anthropic~=0.45.2)
 
 # ---- Scheduler (outbound campaigns + reminders) ----
 apscheduler==3.11.0
@@ -29,12 +36,35 @@ alembic==1.14.0
 # ---- Integrations ----
 google-api-python-client==2.157.0
 google-auth-oauthlib==1.2.1
-httpx==0.28.1
+#
+# Held at 0.27.2 by pipecat-ai 0.0.55 (`httpx~=0.27.2`, i.e. >=0.27.2,<0.28).
+# Every other consumer here accepts it: openai and anthropic both ask for
+# >=0.23,<1, and twilio / google-api-python-client impose no constraint.
+# The codebase already uses the 0.28-compatible `ASGITransport(app=...)`
+# form, so nothing had to change to move back one minor version.
+httpx==0.27.2
 
 # STEP 5: application-level encryption of CRM credentials at rest (AES-256-GCM).
 # There is no stdlib AEAD, and hand-rolling one is not an option, so this is a
 # hard dependency: `app/core/config.py` refuses to boot in production without it.
 cryptography==44.0.0
+
+# ---- Knowledge base / RAG document extraction (STEP 4) ----
+# `app/knowledge/extractors/pdf.py` imports `pypdf` lazily and degrades to an
+# ExtractionError when it is absent, so the omission was invisible at boot and
+# only surfaced as six failing PDF tests on a clean install. Pure Python and
+# does not shell out, which is the point: a PDF is an untrusted file and
+# handing it to a native converter is a far larger attack surface.
+pypdf==5.1.0
+
+# `app/knowledge/extractors/docx.py` imports `docx` lazily and degrades to an
+# ExtractionError("DOCX support is not installed"), so like pypdf the omission
+# was invisible at boot -- but DOCX is an advertised upload format
+# (`extractors/__init__.py` sniffs the zip magic and routes .docx here), so on
+# a clean install every Word upload failed. Reads the OOXML directly: it never
+# opens Word and never runs a macro, which matters because an uploaded
+# document is untrusted input.
+python-docx==1.2.0
 
 # ---- Ops ----
 structlog==24.4.0
@@ -50,3 +80,4 @@ ruff==0.8.4
 bcrypt==4.2.1              # password hashing; used directly, not via passlib
 PyJWT==2.10.1              # access tokens (HS256, pinned on decode)
 email-validator==2.2.0     # EmailStr validation for pydantic
+

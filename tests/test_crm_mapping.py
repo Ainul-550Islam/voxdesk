@@ -281,3 +281,4 @@ class TestLeadMapping:
         assert contact.company == "Doe Plumbing"
         assert contact.lead_score == 70
         assert contact.tags == ("lead",)
+

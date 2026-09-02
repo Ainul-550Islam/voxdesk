@@ -864,3 +864,4 @@ async def update_scheduling_policy(
 
     await session.commit()
     return await get_scheduling_policy(ctx=ctx, session=session)
+

@@ -309,3 +309,4 @@ async def test_nonexistent_random_uuid_also_returns_404(client, owner_a):
     headers = await auth_headers(client, owner_a)
     r = await client.get(f"/api/tenants/{uuid.uuid4()}/calls", headers=headers)
     assert r.status_code == 404
+

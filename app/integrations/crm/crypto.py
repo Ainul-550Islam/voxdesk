@@ -252,3 +252,4 @@ def key_ring_from_settings():
     if not settings.crm_encryption_keys:
         return None
     return parse_key_ring(settings.crm_encryption_keys)
+

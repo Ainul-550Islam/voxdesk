@@ -186,3 +186,4 @@ def test_failure_reason_is_not_set_on_a_clean_completion():
 
 def test_can_transition_allows_self():
     assert call_state.can_transition(CallStatus.COMPLETED, CallStatus.COMPLETED)
+

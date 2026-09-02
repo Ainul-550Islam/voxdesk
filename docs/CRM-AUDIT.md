@@ -67,3 +67,4 @@ isolate.
 `app.integrations.crm.legacy` and remain re-exported from
 `app.integrations.crm`, so the six existing tests in `tests/test_outbound.py`
 pass unmodified. Nothing new calls them.
+

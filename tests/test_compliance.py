@@ -103,3 +103,4 @@ def test_sample_messages_pass_our_own_validator():
     for msg in sample_messages("Bright Smile Dental"):
         assert is_sendable(msg, is_first_of_thread=True) is True
         assert "STOP" in msg
+

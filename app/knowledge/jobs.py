@@ -133,3 +133,4 @@ async def process_pending(limit: int = 5) -> int:
     for document_id in ids:
         await run_ingestion(document_id)
     return len(ids)
+

@@ -428,3 +428,4 @@ async def test_no_secret_reaches_the_structured_log(
 
     assert captured, "nothing was logged, so the assertion would be vacuous"
     assert "pat-na1-LOG-LEAK-TEST" not in json.dumps(captured, default=str)
+

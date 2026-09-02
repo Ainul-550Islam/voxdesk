@@ -137,3 +137,4 @@ class HashingEmbedder(Embedder):
         if norm == 0.0:
             return vector
         return [v / norm for v in vector]
+

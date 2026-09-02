@@ -377,3 +377,4 @@ Ruff-এ ৮টা pre-existing warning আছে `routes.py`/`vectorstore.py`/`
 একটা (`twilio_handler.py`-তে dead `asyncio` import) সরানো হয়েছে।
 
 **STEP 1–4-এর কিছুই ভাঙেনি।** ৬৯০ পূর্ববর্তী টেস্ট অপরিবর্তিতভাবে পাস করে।
+

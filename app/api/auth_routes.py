@@ -218,6 +218,16 @@ async def me(ctx: TenantContext = Depends(get_context)):
             "industry": ctx.tenant.industry,
             "plan": ctx.tenant.plan,
             "language": ctx.tenant.language,
+            # STEP 8 phase 1, purely additive. The dashboard renders every
+            # timestamp in the *tenant's* zone rather than the browser's --
+            # a US business viewed from Dhaka must show US call times -- and
+            # labels agent turns with the tenant's configured agent name
+            # instead of the hard-coded "Alex" the audit found. Both columns
+            # already existed on `Tenant`; only this projection was missing,
+            # so there is no schema change and no new query.
+            "timezone": ctx.tenant.timezone,
+            "agent_name": ctx.tenant.agent_name,
+            "twilio_number": ctx.tenant.twilio_number,
         },
         permissions=sorted(p.value for p in permissions_for(ctx.role)),
     )
@@ -227,3 +237,4 @@ async def me(ctx: TenantContext = Depends(get_context)):
 async def roles(ctx: TenantContext = Depends(get_context)):
     """The policy itself, so the dashboard can render role pickers correctly."""
     return {"roles": describe_roles()}
+

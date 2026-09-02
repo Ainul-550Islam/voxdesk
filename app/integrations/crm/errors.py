@@ -263,3 +263,4 @@ def safe_message(text: str, *, limit: int = 400) -> str:
     if len(scrubbed) > limit:
         scrubbed = scrubbed[: limit - 1].rstrip() + "…"
     return scrubbed
+

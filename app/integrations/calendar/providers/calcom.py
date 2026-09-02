@@ -436,3 +436,4 @@ def _looks_like_conflict(message: str) -> bool:
 def _looks_like_already_cancelled(message: str) -> bool:
     lowered = message.lower()
     return "already cancelled" in lowered or "already canceled" in lowered
+

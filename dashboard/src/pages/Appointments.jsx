@@ -17,7 +17,7 @@ import {
   Alert, AsyncSection, DataTable, Dialog, EmptyState, Field, StatusBadge,
 } from '../components/ui'
 import { cancelAppointment, listAppointments, rescheduleAppointment } from '../lib/api'
-import { formatDateTime, formatPhone } from '../lib/format'
+import { formatDateTime, formatPhone, safeExternalUrl } from '../lib/format'
 import { useAction, useApi } from '../lib/hooks'
 import { PERMISSIONS as P } from '../lib/permissions'
 
@@ -91,11 +91,17 @@ export default function Appointments({ me, can }) {
     },
     {
       key: 'meeting', header: 'Meeting',
-      render: (appointment) => appointment.meeting_url ? (
-        <a href={appointment.meeting_url} target="_blank" rel="noreferrer noopener">
-          Join
-        </a>
-      ) : <span className="muted">—</span>,
+      // `meeting_url` is provider-supplied, so it is allowlisted before it
+      // becomes an href. A rejected value falls through to the same "—" a
+      // missing URL shows.
+      render: (appointment) => {
+        const href = safeExternalUrl(appointment.meeting_url)
+        return href ? (
+          <a href={href} target="_blank" rel="noopener noreferrer">
+            Join
+          </a>
+        ) : <span className="muted">—</span>
+      },
     },
     {
       key: 'actions', header: 'Actions',
@@ -234,3 +240,4 @@ function RescheduleDialog({ appointment, onClose, onDone }) {
     </Dialog>
   )
 }
+

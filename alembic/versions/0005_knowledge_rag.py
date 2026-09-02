@@ -178,3 +178,4 @@ def downgrade() -> None:
     bind = op.get_bind()
     document_source_type.drop(bind, checkfirst=True)
     document_status.drop(bind, checkfirst=True)
+

@@ -646,3 +646,4 @@ class FunctionHandlers:
         except Exception as exc:  # never let a tool crash the call
             log.error("function.failed", name=name, error=str(exc))
             return {"ok": False, "message": "That did not work. Offer to take a message."}
+

@@ -183,3 +183,4 @@ async def run_campaign_tick(
     leads = await next_callable_leads(session, tenant, campaign, limit=campaign.calls_per_minute)
     results = [await place_call(session, tenant, campaign, l, dry_run=dry_run) for l in leads]
     return {"dialed": sum(1 for r in results if r.get("ok")), "results": results}
+

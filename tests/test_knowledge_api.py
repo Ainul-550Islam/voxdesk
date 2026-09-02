@@ -352,3 +352,4 @@ async def test_stats_report_the_embedding_configuration(client, db, tenant_a, ow
     assert body["searchable_chunks"] > 0
     assert body["embedding_model"]
     assert body["embedding_dimensions"] > 0
+

@@ -65,3 +65,4 @@ def capabilities_of(provider: CalendarProviderType) -> frozenset[CalendarCapabil
 
 def supports(provider: CalendarProviderType, capability: CalendarCapability) -> bool:
     return capability in capabilities_of(provider)
+

@@ -200,3 +200,4 @@ async def test_audit_feed_is_scoped_to_the_tenant(client, db, tenant_a, tenant_b
     headers = await auth_headers(client, owner_a)
     rows = (await client.get("/api/team/audit", headers=headers)).json()
     assert all(r.get("actor_email") != owner_b.email for r in rows)
+

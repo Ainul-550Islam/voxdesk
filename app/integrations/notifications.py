@@ -32,3 +32,4 @@ async def send_sms(to: str, body: str) -> bool:
     except Exception as exc:
         log.error("sms.failed", to=to, error=str(exc))
         return False
+

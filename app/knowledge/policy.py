@@ -85,3 +85,4 @@ def should_retrieve(utterance: str) -> bool:
 
     # Statements with no question shape: let the booking flow handle them.
     return False
+

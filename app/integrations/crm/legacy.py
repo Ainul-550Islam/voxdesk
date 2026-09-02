@@ -128,3 +128,4 @@ async def push(
             log.warning("crm.push_failed", error=str(exc), attempt=attempt)
 
     return False
+

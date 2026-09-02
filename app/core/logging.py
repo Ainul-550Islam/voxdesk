@@ -27,3 +27,4 @@ def timed(label: str, **ctx):
     finally:
         elapsed_ms = (time.perf_counter() - start) * 1000
         log.info("timing", stage=label, ms=round(elapsed_ms, 1), **ctx)
+

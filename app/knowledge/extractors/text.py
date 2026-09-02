@@ -80,3 +80,4 @@ class TextExtractor:
 
 def _looks_markdown(text: str) -> bool:
     return bool(_ATX.search(text) or _SETEXT.search(text) or "```" in text)
+

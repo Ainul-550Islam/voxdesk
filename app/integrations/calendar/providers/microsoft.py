@@ -479,3 +479,4 @@ def _busy_from_view(view: str, start: datetime, interval_minutes: int) -> list[B
         end = start + timedelta(minutes=interval_minutes * len(view))
         periods.append(BusyPeriod(start=run_start, end=end, source="microsoft"))
     return periods
+

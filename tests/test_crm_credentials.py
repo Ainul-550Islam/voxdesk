@@ -322,3 +322,4 @@ async def test_the_api_model_has_no_field_that_could_carry_a_secret():
             f"IntegrationOut.{name} is named like a secret; if it is not one, "
             f"rename it, and if it is, remove it"
         )
+

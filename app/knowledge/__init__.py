@@ -18,3 +18,4 @@ The one rule that outranks everything else: a chunk belonging to tenant A must
 never be returned to tenant B. Every query filters on tenant_id in its own
 WHERE clause rather than filtering results afterwards.
 """
+

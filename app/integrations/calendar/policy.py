@@ -423,3 +423,4 @@ def _spoken_time(value: time) -> str:
     hour = value.hour % 12 or 12
     meridiem = "am" if value.hour < 12 else "pm"
     return f"{hour}:{value.minute:02d} {meridiem}" if value.minute else f"{hour} {meridiem}"
+

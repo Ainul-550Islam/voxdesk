@@ -425,3 +425,4 @@ tests/            ১৪৫টা
 4. নিজের নম্বরে কল দিন
 5. যা অস্বস্তিকর লাগে লিখে রাখুন → `vad_stop_secs` / `temperature` টিউন করুন
 6. স্ক্রিন রেকর্ডিং = আপনার Fiverr gig, Upwork proposal, cold email — সব
+

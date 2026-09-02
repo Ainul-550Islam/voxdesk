@@ -140,3 +140,4 @@ def describe_roles() -> list[dict]:
         }
         for role in sorted(UserRole, key=role_level, reverse=True)
     ]
+

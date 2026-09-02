@@ -71,3 +71,4 @@ def set_embedder(embedder: Embedder | None) -> None:
 
 def reset_embedder() -> None:
     set_embedder(None)
+
