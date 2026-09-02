@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: voxdesk
+      POSTGRES_PASSWORD: voxdesk
+      POSTGRES_DB: voxdesk
+    ports: ["5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voxdesk"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build: .
+    env_file: .env
+    ports: ["8000:8000"]
+    depends_on:
+      db: {condition: service_healthy}
+    volumes:
+      - ./app:/srv/app
+      - ./secrets:/srv/secrets
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  scheduler:
+    build: .
+    env_file: .env
+    depends_on:
+      db: {condition: service_healthy}
+    volumes:
+      - ./app:/srv/app
+      - ./scripts:/srv/scripts
+      - ./secrets:/srv/secrets
+    command: python -m scripts.scheduler
+    restart: unless-stopped
+
+  dashboard:
+    image: node:20-alpine
+    working_dir: /srv
+    volumes: ["./dashboard:/srv"]
+    ports: ["5173:5173"]
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    depends_on: [api]
+
+volumes:
+  pgdata:
