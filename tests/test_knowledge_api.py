@@ -7,7 +7,7 @@ capability rather than on role names -- a viewer is refused because they lack
 """
 from __future__ import annotations
 
-import pytest
+
 
 from app.db.models import DocumentStatus
 from tests.conftest import add_document, auth_headers
@@ -352,4 +352,3 @@ async def test_stats_report_the_embedding_configuration(client, db, tenant_a, ow
     assert body["searchable_chunks"] > 0
     assert body["embedding_model"]
     assert body["embedding_dimensions"] > 0
-

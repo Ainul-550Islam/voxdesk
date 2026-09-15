@@ -273,4 +273,3 @@ async def get_platform_admin(
     a known limitation rather than left as an open endpoint.
     """
     raise _forbidden("Platform administration is not available through this API")
-

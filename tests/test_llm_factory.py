@@ -59,4 +59,3 @@ def test_all_presets_are_low_latency():
         if name == "smart":
             continue
         assert choice.est_latency_ms <= 350, f"{name} খুব ধীর"
-

@@ -16,10 +16,11 @@ from datetime import time as dtime
 from zoneinfo import ZoneInfo
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.metrics import record_side_effect
 from app.db.models import (
     Call,
     CallDirection,
@@ -29,6 +30,7 @@ from app.db.models import (
     LeadStatus,
     Tenant,
 )
+from app.telephony import phone
 
 log = structlog.get_logger()
 
@@ -108,6 +110,46 @@ def build_outbound_twiml_url(campaign_id: str, lead_id: str) -> str:
     return f"{base}/telephony/outbound-answer?campaign_id={campaign_id}&lead_id={lead_id}"
 
 
+async def _claim_attempt(
+    session: AsyncSession,
+    lead: Lead,
+    tenant: Tenant,
+    *,
+    now: datetime,
+) -> bool:
+    """
+    Atomically reserve the next dial attempt, or lose the race.
+
+    Step 6 (scale-compliance). The old code did `lead.attempts += 1` in memory
+    and only persisted it *after* dialing, so two overlapping campaign ticks
+    (or a crash between Twilio accepting the call and the commit) would dial
+    the same lead twice. A single conditional UPDATE arbitrates the race: the
+    `attempts == :seen` guard is a compare-and-set, so exactly one worker can
+    ever increment past the value it read, and the attempt is durably recorded
+    *before* the phone rings.
+    """
+    result = await session.execute(
+        update(Lead)
+        .where(
+            Lead.id == lead.id,
+            Lead.attempts == lead.attempts,
+            Lead.attempts < tenant.max_call_attempts,
+            Lead.status.in_([LeadStatus.NEW, LeadStatus.QUEUED]),
+        )
+        .values(
+            attempts=lead.attempts + 1,
+            status=LeadStatus.QUEUED,
+            last_attempt_at=now,
+            next_attempt_at=now + backoff_for(lead.attempts + 1),
+        )
+        # The caller mirrors these fields on the ORM object exactly once;
+        # letting the session "evaluate" the increment back would double it.
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+    return result.rowcount == 1
+
+
 async def place_call(
     session: AsyncSession,
     tenant: Tenant,
@@ -129,15 +171,25 @@ async def place_call(
         return {"ok": False, "reason": "outside_window",
                 "retry_at": lead.next_attempt_at.isoformat()}
 
-    caller_id = tenant.outbound_caller_id or tenant.twilio_number
+    now = datetime.utcnow()
+    if not await _claim_attempt(session, lead, tenant, now=now):
+        # Another worker (or a concurrent tick) owns this lead, or it hit the
+        # attempt cap between our check and the claim. Do not dial.
+        return {"ok": False, "reason": "claimed_by_another"}
+
+    # Mirror what the database now holds so the rest of this function reads
+    # consistent state without a round-trip.
     lead.attempts += 1
-    lead.last_attempt_at = datetime.utcnow()
+    lead.last_attempt_at = now
     lead.status = LeadStatus.QUEUED
+    lead.next_attempt_at = now + backoff_for(lead.attempts)
+
+    caller_id = tenant.outbound_caller_id or tenant.twilio_number
 
     if dry_run:
-        await session.commit()
         return {"ok": True, "dry_run": True, "to": lead.phone, "from": caller_id}
 
+    record_side_effect("outbound_call", "attempt")
     try:
         client = _twilio_client()
         tw_call = client.calls.create(
@@ -151,9 +203,14 @@ async def place_call(
         )
     except Exception as exc:
         lead.status = LeadStatus.FAILED
-        lead.next_attempt_at = datetime.utcnow() + backoff_for(lead.attempts)
+        lead.next_attempt_at = now + backoff_for(lead.attempts)
         await session.commit()
-        log.error("outbound.dial_failed", lead=str(lead.id), error=str(exc))
+        # Provider detail stays out of the logs: the exception string can
+        # quote a request body, and the number is redacted regardless. The
+        # API return keeps the original message for the operator.
+        log.error("outbound.dial_failed", lead=str(lead.id),
+                  error=type(exc).__name__)
+        record_side_effect("outbound_call", "failure")
         return {"ok": False, "reason": "dial_failed", "error": str(exc)}
 
     session.add(Call(
@@ -165,9 +222,11 @@ async def place_call(
         direction=CallDirection.OUTBOUND,
         lead_id=lead.id,
     ))
-    lead.next_attempt_at = datetime.utcnow() + backoff_for(lead.attempts)
+    lead.next_attempt_at = now + backoff_for(lead.attempts)
     await session.commit()
-    log.info("outbound.dialed", to=lead.phone, campaign=campaign.name, sid=tw_call.sid)
+    log.info("outbound.dialed", to=phone.redact(lead.phone),
+             campaign=campaign.name, sid=tw_call.sid)
+    record_side_effect("outbound_call", "success")
     return {"ok": True, "call_sid": tw_call.sid, "to": lead.phone}
 
 
@@ -181,6 +240,5 @@ async def run_campaign_tick(
         return {"dialed": 0, "reason": "outside_window"}
 
     leads = await next_callable_leads(session, tenant, campaign, limit=campaign.calls_per_minute)
-    results = [await place_call(session, tenant, campaign, l, dry_run=dry_run) for l in leads]
+    results = [await place_call(session, tenant, campaign, lead, dry_run=dry_run) for lead in leads]
     return {"dialed": sum(1 for r in results if r.get("ok")), "results": results}
-

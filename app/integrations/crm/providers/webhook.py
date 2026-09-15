@@ -326,4 +326,3 @@ def _external_id(response: Any) -> str | None:
             if response.get(key):
                 return str(response[key])
     return None
-

@@ -590,7 +590,7 @@ def test_crm_sync_status_migration_matches_the_model():
     assert declared == {m.name for m in CrmSyncStatus}
 
 
-def test_the_new_audit_actions_are_added_by_the_migration():
+def test_integration_audit_actions_are_added_by_migration_0006():
     """
     `auditaction` is an existing PostgreSQL type, so new members need an
     explicit `ALTER TYPE ... ADD VALUE`. Forgetting it means every
@@ -770,7 +770,7 @@ def test_calendar_provider_type_migration_matches_the_model():
     assert declared == {m.name for m in CalendarProviderType}
 
 
-def test_the_new_audit_actions_are_added_by_the_migration():
+def test_calendar_audit_actions_are_added_by_migration_0007():
     import pathlib
 
     from app.db.models import AuditAction
@@ -1003,6 +1003,37 @@ def test_the_new_billing_audit_actions_are_added_by_the_migration():
     assert "ALTER TYPE auditaction ADD VALUE" in source
 
 
+MIGRATION_0009 = "alembic/versions/0009_perf_policy.py"
+
+
+def test_the_step9_audit_actions_are_added_by_the_migration():
+    """
+    GDPR export/erasure and license issuance write audit rows, and those rows
+    must exist on the PostgreSQL `auditaction` type before the first write --
+    the same drift class the 0006/0007 tests already guard.
+    """
+    import pathlib
+
+    from app.db.models import AuditAction
+
+    source = pathlib.Path(MIGRATION_0009).read_text()
+    for member in (
+        AuditAction.GDPR_EXPORT, AuditAction.GDPR_ERASURE,
+        AuditAction.LICENSE_ISSUED,
+    ):
+        assert member.name in source, f"{member.name} is not added by 0009"
+    assert "ALTER TYPE auditaction ADD VALUE" in source
+
+
+def test_step9_migration_follows_0008():
+    import pathlib
+    import re
+
+    source = pathlib.Path(MIGRATION_0009).read_text()
+    assert re.search(r'^revision = "0009_perf_policy"', source, re.M)
+    assert re.search(r'^down_revision = "0008_billing"', source, re.M)
+
+
 def test_only_live_statuses_entitle_service():
     """
     The policy the whole entitlement layer rests on, asserted here rather than
@@ -1142,4 +1173,3 @@ async def test_every_subscription_status_round_trips_through_the_database(
 
     stored = (await db.execute(_select(Subscription.status))).scalars().all()
     assert set(stored) == set(SubscriptionStatus)
-

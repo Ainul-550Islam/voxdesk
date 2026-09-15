@@ -507,11 +507,14 @@ async def prune_receipts(db_session: AsyncSession, *, older_than_days: int = 60)
 
     cutoff = now_utc() - timedelta(days=older_than_days)
     result = await db_session.execute(
-        delete(BillingWebhookReceipt).where(
+        delete(BillingWebhookReceipt)
+        .where(
             BillingWebhookReceipt.received_at < cutoff,
             BillingWebhookReceipt.processed.is_(True),
         )
+        # Never evaluate this predicate against in-memory rows (tz-aware
+        # `received_at` vs this cutoff raises TypeError under evaluate).
+        .execution_options(synchronize_session=False)
     )
     await db_session.commit()
     return result.rowcount or 0
-

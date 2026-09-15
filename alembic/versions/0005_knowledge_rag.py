@@ -59,10 +59,9 @@ document_source_type = sa.Enum(
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    document_status.create(bind, checkfirst=True)
-    document_source_type.create(bind, checkfirst=True)
-
+    # The enum types are created by `op.create_table` below (SQLAlchemy emits
+    # `CREATE TYPE` for enum columns); creating them first and then again via
+    # the table DDL would emit the type twice and fail on a fresh database.
     op.create_table(
         "knowledge_documents",
         sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
@@ -178,4 +177,3 @@ def downgrade() -> None:
     bind = op.get_bind()
     document_source_type.drop(bind, checkfirst=True)
     document_status.drop(bind, checkfirst=True)
-

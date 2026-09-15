@@ -91,4 +91,3 @@ class DocxExtractor:
                 "table_count": len(document.tables),
             },
         )
-

@@ -28,6 +28,7 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.billing import cost as cost_tracking
 from app.billing import metering
 from app.billing.periods import period_for
 from app.core.logging import log
@@ -133,6 +134,13 @@ async def on_call_finalized(session: AsyncSession, tenant, call) -> bool:
             metering.sync_tenant_cache(session, tenant, period=period),
             what="tenant_cache",
         )
+        # Step 7 cost awareness: record the provider cost exactly where the
+        # usage event lands, so one finalization is one cost observation. An
+        # unconfigured price degrades to UNKNOWN, never a guess.
+        try:
+            cost_tracking.record_cost("voice_minute", seconds / 60.0)
+        except Exception:  # noqa: BLE001 - observability must never fail a call
+            pass
         return True
     return False
 
@@ -155,7 +163,7 @@ async def on_sms_sent(
     subscription = await _subscription_for(session, tenant.id)
     period = period_for(subscription)
 
-    return await _safe(
+    recorded = await _safe(
         metering.record_usage(
             session,
             tenant_id=tenant.id,
@@ -169,6 +177,12 @@ async def on_sms_sent(
         ),
         what="sms_segments",
     )
+    if recorded:
+        try:
+            cost_tracking.record_cost("sms_segment", float(segments))
+        except Exception:  # noqa: BLE001 - observability must never fail a send
+            pass
+    return recorded
 
 
 # ------------------------------------------------------------- LLM / TTS ---
@@ -296,4 +310,3 @@ async def may_add_feature(
         return Entitlement(Decision.ALLOW, feature, reason="enforcement_disabled")
 
     return await check_feature_live(session, context, feature, adding=adding)
-

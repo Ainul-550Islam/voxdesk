@@ -35,6 +35,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from app.core.ssrf import OutboundUrlError, validate_outbound_url
 from app.integrations.calendar.base import (
     CalendarCapability,
     CalendarProvider,
@@ -97,7 +98,13 @@ class GoogleCalendarProvider(CalendarProvider):
         return calendar
 
     def _base(self) -> str:
-        return (self.context.config or {}).get("base_url") or BASE_URL
+        # SSRF guard (Step 9): this URL receives the bearer access token.
+        base = (self.context.config or {}).get("base_url") or BASE_URL
+        try:
+            validate_outbound_url(base, require_https=True)
+        except OutboundUrlError as exc:
+            raise CalendarConfigurationError(str(exc), provider=self.name)
+        return base
 
     def _headers(self) -> dict[str, str]:
         headers = super()._headers()
@@ -133,6 +140,12 @@ class GoogleCalendarProvider(CalendarProvider):
             )
 
         token_url = (self.context.config or {}).get("token_url") or TOKEN_URL
+        # SSRF guard (Step 9): the refresh body carries client_secret and the
+        # refresh token, so the token endpoint must be https and non-private.
+        try:
+            validate_outbound_url(token_url, require_https=True)
+        except OutboundUrlError as exc:
+            raise CalendarConfigurationError(str(exc), provider=self.name)
         try:
             _, data = await self.request(
                 "POST", token_url,
@@ -426,4 +439,3 @@ def _parse_dt(value: Any) -> datetime:
             ) from exc
 
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-

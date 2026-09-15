@@ -41,6 +41,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from app.core.ssrf import OutboundUrlError, validate_outbound_url
 from app.integrations.calendar.base import (
     CalendarCapability,
     CalendarProvider,
@@ -107,7 +108,13 @@ class CalComProvider(CalendarProvider):
             )
 
     def _base(self) -> str:
-        return (self.context.config or {}).get("base_url") or BASE_URL
+        # SSRF guard (Step 9): this URL receives the Cal.com API key.
+        base = (self.context.config or {}).get("base_url") or BASE_URL
+        try:
+            validate_outbound_url(base, require_https=True)
+        except OutboundUrlError as exc:
+            raise CalendarConfigurationError(str(exc), provider=self.name)
+        return base
 
     def _headers(self) -> dict[str, str]:
         headers = super()._headers()
@@ -436,4 +443,3 @@ def _looks_like_conflict(message: str) -> bool:
 def _looks_like_already_cancelled(message: str) -> bool:
     lowered = message.lower()
     return "already cancelled" in lowered or "already canceled" in lowered
-

@@ -1,0 +1,12 @@
+{
+  "build_date": "2026-09-13",
+  "configuration_fingerprint": "4cbf26863cbdeb6753f407ed670b41efd861a1dd5e7a2bd35a679ba3059fd673",
+  "dependency_fingerprint": "7a957fc55213c5f23a58d0461d8c94bc71b43b94fb05b211decda8637f11e522",
+  "environment_class": "production",
+  "git_commit": "01bec2c0e27229f01a6aef7072c5bbbb30a7ade9",
+  "image_digest": "",
+  "migration_heads": [
+    "0011_side_effect_exactly_once"
+  ],
+  "release_identifier": "2026.09.13-step15-staging-hardening"
+}

@@ -19,15 +19,19 @@ import structlog
 from app.telephony.stream_auth import verify_twilio_request
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.functions import FunctionHandlers
 from app.agent.text_agent import TextAgent
+from app.core.metrics import record_side_effect
 from app.db.models import (
-    Call, CallDirection, CallStatus, Lead, LeadStatus, Speaker, Tenant, Turn,
+    Call, CallDirection, CallStatus, Lead, LeadStatus, MessageWebhookReceipt,
+    Speaker, Tenant, Turn,
 )
 from app.db.session import get_session
+from app.telephony import phone as phoneutil
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/channels", tags=["channels"])
@@ -80,13 +84,9 @@ def help_text(business: str) -> str:
 
 # ------------------------------------------------------------- thread state ---
 
-async def get_or_start_thread(
+async def _find_active_thread(
     session: AsyncSession, tenant: Tenant, customer: str, channel: str
-) -> Call:
-    """
-    Text conversations are stored as Calls with duration 0 so that every
-    analytics query, CRM push and transcript view already works unchanged.
-    """
+) -> Call | None:
     cutoff = datetime.utcnow() - timedelta(minutes=THREAD_IDLE_MINUTES)
     stmt = (
         select(Call)
@@ -99,7 +99,22 @@ async def get_or_start_thread(
         .order_by(Call.started_at.desc())
         .limit(1)
     )
-    thread = (await session.execute(stmt)).scalars().first()
+    return (await session.execute(stmt)).scalars().first()
+
+
+async def get_or_start_thread(
+    session: AsyncSession, tenant: Tenant, customer: str, channel: str
+) -> Call:
+    """
+    Text conversations are stored as Calls with duration 0 so that every
+    analytics query, CRM push and transcript view already works unchanged.
+
+    The insert is wrapped in a SAVEPOINT and guarded by the unique constraint
+    on `call_sid`: two requests racing to create the same thread (same channel,
+    same customer, same second) collide there, and the loser re-reads the
+    winner's row instead of minting a second thread.
+    """
+    thread = await _find_active_thread(session, tenant, customer, channel)
     if thread is not None:
         return thread
 
@@ -113,6 +128,15 @@ async def get_or_start_thread(
         intent=f"chat:{channel}",
     )
     session.add(thread)
+    try:
+        async with session.begin_nested():
+            await session.flush()
+    except IntegrityError:
+        # Lost the race with a concurrent request. Reuse the thread it made.
+        thread = await _find_active_thread(session, tenant, customer, channel)
+        if thread is None:
+            raise
+        return thread
     await session.commit()
     await session.refresh(thread)
     return thread
@@ -151,7 +175,7 @@ async def set_opt_out(session: AsyncSession, tenant: Tenant, phone: str, out: bo
         session.add(lead)
     lead.status = LeadStatus.DNC if out else LeadStatus.NEW
     await session.commit()
-    log.info("channel.opt_change", phone=phone, opted_out=out)
+    log.info("channel.opt_change", phone=phoneutil.redact(phone), opted_out=out)
 
 
 # ------------------------------------------------------------------ webhook ---
@@ -162,6 +186,7 @@ async def inbound_message(
     From: str = Form(...),
     To: str = Form(...),
     Body: str = Form(""),
+    MessageSid: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ):
     """Single webhook for both SMS and WhatsApp. Point both Twilio numbers here."""
@@ -179,6 +204,23 @@ async def inbound_message(
     ).scalar_one_or_none()
     if tenant is None or not tenant.is_active:
         return PlainTextResponse(twiml_reply(None), media_type="application/xml")
+
+    # Step 6 (scale-compliance): durable replay protection. The receipt is
+    # flushed in *this* transaction (not committed on its own), so a crash
+    # between here and the final commit rolls the receipt back too and Twilio
+    # safely redelivers. A duplicate delivery violates the unique constraint
+    # and is answered silently -- it must not produce a second turn, a second
+    # LLM call, or a second reply SMS.
+    if MessageSid:
+        session.add(MessageWebhookReceipt(
+            tenant_id=tenant.id, channel=channel, provider_message_id=MessageSid,
+        ))
+        try:
+            await session.flush()
+        except IntegrityError:
+            await session.rollback()
+            record_side_effect("message_webhook", "duplicate")
+            return PlainTextResponse(twiml_reply(None), media_type="application/xml")
 
     keyword = normalize_keyword(Body)
 
@@ -228,6 +270,7 @@ async def inbound_message(
         )
 
     await save_turn(session, thread, Speaker.ASSISTANT, answer)
+    record_side_effect("message_webhook", "success")
     return PlainTextResponse(twiml_reply(answer), media_type="application/xml")
 
 
@@ -245,3 +288,22 @@ async def message_status(
         log.warning("message.undelivered", sid=MessageSid, status=MessageStatus)
     return PlainTextResponse("", media_type="application/xml")
 
+
+async def prune_receipts(session: AsyncSession, *, older_than_days: int = 30) -> int:
+    """
+    Drop old inbound-message replay records.
+
+    Replay protection only needs to cover the window in which Twilio might
+    plausibly redeliver. Keeping receipts forever turns a defence into an
+    unbounded table.
+    """
+    cutoff = datetime.utcnow() - timedelta(days=older_than_days)
+    result = await session.execute(
+        delete(MessageWebhookReceipt)
+        .where(MessageWebhookReceipt.received_at < cutoff)
+        # Never evaluate this predicate against in-memory rows (a loaded
+        # tz-aware `received_at` vs this naive cutoff raises TypeError).
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+    return result.rowcount or 0

@@ -53,4 +53,3 @@ export function match(pattern, path) {
   }
   return params
 }
-

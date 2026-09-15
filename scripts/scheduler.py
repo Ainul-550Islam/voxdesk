@@ -17,6 +17,7 @@ import signal
 import structlog
 from sqlalchemy import select
 
+from app.core import observability
 from app.core.config import settings
 from app.core.logging import log  # noqa: F401  (configures structlog)
 from app.db.models import Campaign, Tenant
@@ -51,6 +52,14 @@ CRM_INTERVAL_SECONDS = 20
 #: often means a metering bug is invisible for a day.
 BILLING_INTERVAL_SECONDS = 3600
 
+#: Data retention. Daily: recordings and transcripts past CALL_RETENTION_DAYS
+#: are purged (app/core/retention.py). A day is plenty; the window is large.
+RETENTION_INTERVAL_SECONDS = 86400
+
+#: Step 7 observability: how often to re-publish the stuck-side-effect gauge.
+#: Read-only counts, so a minute is cheap and keeps the dashboard/alert current.
+STUCK_SWEEP_INTERVAL_SECONDS = 60
+
 
 async def billing_reconciliation_loop() -> None:
     """
@@ -71,7 +80,9 @@ async def billing_reconciliation_loop() -> None:
                 logger.warning("scheduler.billing_discrepancies", **result)
             elif result.get("tenants"):
                 logger.info("scheduler.billing_reconciled", **result)
+            observability.record_job_run("billing_reconciliation", ok=True)
         except Exception as exc:
+            observability.record_job_run("billing_reconciliation", ok=False)
             logger.error("scheduler.billing_failed", error=str(exc))
         await _sleep(BILLING_INTERVAL_SECONDS)
 
@@ -97,9 +108,11 @@ async def crm_sync_loop() -> None:
                 )
             if result["attempted"]:
                 logger.info("scheduler.crm_sync", **result)
+            observability.record_job_run("crm_sync", ok=True)
         except Exception as exc:
             # The loop must survive anything. A CRM outage is routine; a
             # scheduler that exits because of one is not.
+            observability.record_job_run("crm_sync", ok=False)
             logger.error("scheduler.crm_sync_failed", error=str(exc))
         await _sleep(settings.crm_sync_interval_seconds)
 
@@ -112,7 +125,9 @@ async def reminder_loop() -> None:
                 result = await run_reminder_tick(session)
             if result["total"]:
                 logger.info("scheduler.reminders", **result)
+            observability.record_job_run("reminders", ok=True)
         except Exception as exc:
+            observability.record_job_run("reminders", ok=False)
             logger.error("scheduler.reminder_failed", error=str(exc))
         await _sleep(REMINDER_INTERVAL_SECONDS)
 
@@ -133,9 +148,30 @@ async def campaign_loop() -> None:
                     if result.get("dialed"):
                         logger.info("scheduler.campaign",
                                     campaign=campaign.name, **result)
+            observability.record_job_run("campaigns", ok=True)
         except Exception as exc:
+            observability.record_job_run("campaigns", ok=False)
             logger.error("scheduler.campaign_failed", error=str(exc))
         await _sleep(CAMPAIGN_INTERVAL_SECONDS)
+
+
+async def retention_loop() -> None:
+    """Daily purge of calls/transcripts past the retention window, plus the
+    webhook-replay receipts that only need to outlive their redelivery
+    window."""
+    from app.core.retention import prune_webhook_receipts, purge_expired_calls
+
+    maker = get_sessionmaker()
+    while not _stop.is_set():
+        try:
+            async with maker() as session:
+                await purge_expired_calls(session)
+                await prune_webhook_receipts(session)
+            observability.record_job_run("retention", ok=True)
+        except Exception as exc:
+            observability.record_job_run("retention", ok=False)
+            logger.error("scheduler.retention_failed", error=str(exc))
+        await _sleep(RETENTION_INTERVAL_SECONDS)
 
 
 async def knowledge_ingestion_loop() -> None:
@@ -160,9 +196,11 @@ async def knowledge_ingestion_loop() -> None:
             handled = await process_pending(limit=KNOWLEDGE_BATCH_SIZE)
             if handled:
                 logger.info("scheduler.knowledge_indexed", documents=handled)
+            observability.record_job_run("knowledge", ok=True)
         except Exception as exc:
             # Never let an ingestion problem kill the loop; the next pass
             # retries, and the document itself carries its own FAILED state.
+            observability.record_job_run("knowledge", ok=False)
             logger.error("scheduler.knowledge_failed", error=str(exc)[:300])
         await _sleep(KNOWLEDGE_INTERVAL_SECONDS)
 
@@ -175,19 +213,60 @@ async def _sleep(seconds: int) -> None:
         pass
 
 
+async def stuck_sweep_loop() -> None:
+    """Publish the stuck-side-effect gauge (Step 7 observability).
+
+    Read-only: the *recovery* of a stuck row is the reapers' job
+    (``crm.service.reap_stuck_syncs``, ``knowledge.ingest.reap_stuck_documents``).
+    This loop only counts what is still stuck past its window and mirrors it
+    into ``voxdesk_stuck_side_effects`` so an alert can fire before a customer
+    notices a reminder or CRM write that never arrived.
+    """
+    maker = get_sessionmaker()
+    while not _stop.is_set():
+        try:
+            async with maker() as session:
+                counts = await observability.stuck_side_effect_counts(session)
+            observability.set_stuck_side_effects(counts)
+            if any(counts.values()):
+                logger.warning("scheduler.stuck_side_effects", **counts)
+        except Exception as exc:
+            logger.error("scheduler.stuck_sweep_failed", error=str(exc))
+        await _sleep(STUCK_SWEEP_INTERVAL_SECONDS)
+
+
+def _start_metrics_server() -> None:
+    """Serve /metrics for the scheduler's own Prometheus registry.
+
+    The worker is a separate process from the API, so its job metrics
+    (``voxdesk_job_runs_total``, ``voxdesk_job_last_success_timestamp_seconds``,
+    ``voxdesk_stuck_side_effects``) are not visible through the API's scrape
+    target. prometheus_client ships a tiny threaded HTTP server; binding it on
+    a dedicated port gives Prometheus a second job to scrape with no web
+    framework added. 0 (or unset) disables it.
+    """
+    port = settings.scheduler_metrics_port
+    if port and port > 0:
+        from prometheus_client import start_http_server
+
+        start_http_server(port)
+        logger.info("scheduler.metrics_server", port=port)
+
+
 async def main() -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _stop.set)
 
+    _start_metrics_server()
     logger.info("scheduler.started")
     await asyncio.gather(
         reminder_loop(), campaign_loop(), knowledge_ingestion_loop(),
-        crm_sync_loop(), billing_reconciliation_loop(),
+        crm_sync_loop(), billing_reconciliation_loop(), retention_loop(),
+        stuck_sweep_loop(),
     )
     logger.info("scheduler.stopped")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-

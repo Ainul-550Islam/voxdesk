@@ -168,4 +168,3 @@ def test_config_from_settings_reads_the_real_setting_names():
     assert config.size == settings.knowledge_chunk_chars
     assert config.overlap == settings.knowledge_chunk_overlap_chars
     assert config.min_size == settings.knowledge_min_chunk_chars
-

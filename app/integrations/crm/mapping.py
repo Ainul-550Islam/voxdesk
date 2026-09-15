@@ -222,4 +222,3 @@ def call_tags(call: Any) -> tuple[str, ...]:
     # dict.fromkeys: dedupe while keeping order, so `intent="booked"` does not
     # produce the tag twice.
     return tuple(dict.fromkeys(t for t in tags if t))
-

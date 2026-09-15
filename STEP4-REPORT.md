@@ -446,4 +446,3 @@ positive** — `perf_counter` ম্যাচ করেছিল একটা �
 §১৬-এর "যাচাই করা হয়নি" ১০টা আইটেম **অপরিবর্তিত** — pgvector, বাস্তব
 `alembic upgrade head`, আসল OpenAI HTTP পাথ, S3/boto3, বাস্তব ভয়েস কল, mypy,
 pyflakes/ruff, ৯০ chunk-এর বেশি স্কেল, OCR। এই অডিট সেগুলোর একটাও বদলায়নি।
-

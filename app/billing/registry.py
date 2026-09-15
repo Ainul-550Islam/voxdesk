@@ -76,4 +76,3 @@ def config_from_settings() -> BillingContextConfig:
         cancel_url=settings.billing_checkout_cancel_url,
         return_url=settings.billing_portal_return_url,
     )
-

@@ -3,8 +3,9 @@ Provider callback handling: signatures, idempotency, and ordering races.
 
 These drive the real FastAPI webhook routes over the real router stack against
 a real database. Twilio itself is not involved -- signature verification is
-bypassed in APP_ENV=development, which is exactly the configuration these
-routes run under in tests -- but every state change is asserted in the DB.
+bypassed because the test harness enables the dev-only flag
+TWILIO_SKIP_WEBHOOK_VERIFY (see tests/conftest.py) -- but every state change
+is asserted in the DB.
 """
 from __future__ import annotations
 
@@ -54,13 +55,14 @@ async def system_texts(db, call):
 # ================================================================ security ===
 
 @pytest.mark.asyncio
-async def test_status_webhook_rejects_a_bad_signature_outside_development(
+async def test_status_webhook_rejects_a_bad_signature_when_verification_is_on(
     client, db, monkeypatch
 ):
     """This route previously had no signature check at all."""
     tenant = await make_tenant(db, "Sig Co")
     call = await seed_call(db, tenant)
     monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "twilio_skip_webhook_verify", False)
 
     resp = await post_status(client, call.call_sid, "completed")
 
@@ -74,6 +76,7 @@ async def test_transfer_status_webhook_rejects_a_bad_signature(client, db, monke
     tenant = await tenant_with_human(db)
     call = await seed_call(db, tenant)
     monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "twilio_skip_webhook_verify", False)
     assert (await post_dial(client, call.call_sid, "answered")).status_code == 403
 
 
@@ -348,6 +351,7 @@ async def test_provider_reported_failure_is_not_overridden_by_a_later_connect(
 async def test_outbound_answer_webhook_requires_a_signature(client, monkeypatch):
     """The last telephony route that was still unauthenticated."""
     monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "twilio_skip_webhook_verify", False)
     resp = await client.post(
         "/telephony/outbound-answer",
         data={"CallSid": "CA-whatever", "AnsweredBy": "human"},
@@ -363,4 +367,3 @@ async def test_outbound_answer_works_in_development(client):
     )
     assert resp.status_code == 200
     assert "<Stream" in resp.text
-

@@ -173,4 +173,3 @@ def test_reminder_text_without_name_still_reads_ok():
 def test_reminder_call_script_asks_a_question():
     script = reminder_call_script("Acme", datetime(2026, 6, 15, 9, 0), "Bob")
     assert script.endswith("?") and "Bob" in script
-

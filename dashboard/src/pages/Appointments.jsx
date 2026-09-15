@@ -240,4 +240,3 @@ function RescheduleDialog({ appointment, onClose, onDone }) {
     </Dialog>
   )
 }
-

@@ -1,6 +1,31 @@
 """Central configuration. Everything comes from environment variables."""
+import json
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+#: The deployment environments the code understands. Anything else is
+#: rejected at startup — fail closed rather than guessing.
+KNOWN_APP_ENVS = frozenset({"development", "test", "staging", "production", "prod"})
+
+#: Substrings that mark a value as an obvious placeholder. Used to refuse
+#: obviously-unset secrets in production (a value that contains any of these
+#: cannot be a real credential).
+_PLACEHOLDER_MARKERS = (
+    "change-me",
+    "change_me",
+    "insecure",
+    "xxxx",
+    "placeholder",
+    "your-",
+    "<",
+    ">",
+)
+
+
+def _looks_placeholder(value: str | None) -> bool:
+    """True when ``value`` is clearly a placeholder, not a real secret."""
+    lowered = (value or "").lower()
+    return bool(lowered) and any(marker in lowered for marker in _PLACEHOLDER_MARKERS)
 
 
 class Settings(BaseSettings):
@@ -25,6 +50,14 @@ class Settings(BaseSettings):
     # Comma-separated browser origins allowed to call the API.
     cors_origins: str = "http://localhost:5173"
 
+    # Comma-separated hostnames the HTTP layer will accept in the Host header
+    # (TrustedHostMiddleware). Empty = the middleware is not installed, which
+    # is the right default for single-proxy deployments where Caddy already
+    # terminates TLS for exactly the configured domains. Set it in production
+    # (e.g. "app.example.com") to reject Host-header spoofing and
+    # host-header-based SSRF/cache-poisoning at the application layer too.
+    trusted_hosts: str = ""
+
     # Database
     database_url: str = "postgresql+asyncpg://voxdesk:voxdesk@localhost:5432/voxdesk"
 
@@ -32,6 +65,34 @@ class Settings(BaseSettings):
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     twilio_phone_number: str = ""
+
+    # Twilio webhook signature verification is ON by default (fail-closed).
+    # This opt-in flag disables it for local development so webhooks can be
+    # exercised with curl and no valid X-Twilio-Signature. It MUST stay false
+    # in production -- validate_security() refuses to boot otherwise.
+    twilio_skip_webhook_verify: bool = False
+
+    # ---- Real-call E2E (Step 5, scale-compliance) ----
+    # The only way a *real* telephone call may exercise the AI voice pipeline
+    # outside normal production traffic is a genuine, human-controlled test:
+    # an operator dials a dedicated test number from an allowlisted phone, and
+    # the dialed number maps to a tenant marked `is_test_tenant`. `e2e_enabled`
+    # arms the guard; nothing here ever places a call. Production is rejected
+    # outright (validate_security refuses to boot), and when armed, any call
+    # that is not an explicit, allowlisted test call is refused at the door.
+    e2e_enabled: bool = False
+    # The dedicated Twilio number that the test tenant answers. Required when
+    # e2e_enabled is set.
+    e2e_test_number: str = ""
+    # Comma-separated allowlist of operator caller numbers (E.164) permitted to
+    # trigger a live E2E call. Empty means "nobody".
+    e2e_allowed_callers: str = ""
+
+    # Media-stream handshake: how long we wait for Twilio's "connected" +
+    # "start" frames after accepting the socket before closing it. A client
+    # that connects and never speaks would otherwise hold a database session
+    # and a socket open forever (a stuck call). 0 disables the bound.
+    stream_handshake_timeout_seconds: float = 15.0
 
     # Deepgram (STT)
     deepgram_api_key: str = ""
@@ -123,13 +184,164 @@ class Settings(BaseSettings):
     # Google
     google_credentials_json: str = "./secrets/google_service_account.json"
 
+    # ---------- Observability (STEP 9) ----------
+    # Sentry error reporting. Optional: when empty nothing is initialised and
+    # unhandled exceptions are reported nowhere (fine for development). Set it
+    # to your project DSN in production. Never logged, never returned by an API.
+    sentry_dsn: str = ""
+
+    # Log level (DEBUG|INFO|WARNING|ERROR) and renderer. Production defaults to
+    # machine-readable JSON (see app/core/logging.py); development keeps the
+    # coloured console output. LOG_FORMAT accepts "console" or "json".
+    log_level: str = "INFO"
+    log_format: str = "console"
+
+    # ---------- Data policy / compliance (STEP 9) ----------
+    # Retention for call recordings and transcripts, which hold personal data.
+    # Operator-configurable per jurisdiction: GDPR/EU and healthcare buyers
+    # usually want 30-90 days; 365 is a safe default for the US. Records older
+    # than the cutoff are flagged for deletion (app/core/data_policy.py,
+    # docs/COMPLIANCE.md).
+    call_retention_days: int = 365
+
+    # EU AI Act transparency (Art. 50) and several US state laws: a caller must
+    # know they are speaking to an automated agent. Default true; the tenant's
+    # greeting is checked with app.core.data_policy.ai_disclosure_present().
+    ai_disclosure_required: bool = True
+
+    # ---------- Rate limiting (STEP 9) ----------
+    # OFF by default so tests and local dev are unaffected; production sets
+    # RATE_LIMIT_ENABLED=true. The limiter fails closed (rejects) on error.
+    rate_limit_enabled: bool = False
+    rate_limit_burst: int = 300        # non-auth requests per minute per IP
+    rate_limit_login_per_minute: int = 10   # auth requests per minute per IP
+
+    # ---------- Redis / cache (STEP 9) ----------
+    # Empty = in-process cache and rate limiting (single worker). Set
+    # REDIS_URL=redis://redis:6379/0 in multi-worker production.
+    redis_url: str = ""
+    cache_ttl_seconds: int = 60
+
+    # ---------- Database pool (STEP 9) ----------
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+
+    # ---------- Metrics (STEP 9) ----------
+    # Prometheus /metrics endpoint. Disabled by default; production sets
+    # METRICS_ENABLED=true and a METRICS_TOKEN for the scraper.
+    metrics_enabled: bool = False
+    metrics_token: str = ""
+
+    # ---------- Cost awareness (STEP 7 scale-compliance) ----------
+    # Operator-provided *provider* unit prices, in millicents per smallest
+    # unit, as a JSON object. Keys are a fixed vocabulary; anything unknown is
+    # ignored. A missing or zero price means UNKNOWN — the cost metric is
+    # reported with cost_known=0 rather than an invented number. See
+    # docs/COST-AWARENESS.md.
+    #
+    #   {"voice_minute": 1300, "sms_segment": 790,
+    #    "llm_1k_tokens:openai": 15, "llm_1k_tokens:anthropic": 80,
+    #    "tts_1k_chars": 30}
+    #
+    # These are what VoxDesk *pays providers*, not what tenants are charged
+    # (the plan catalogue owns revenue). Never a billing authority.
+    cost_unit_prices_json: str = ""
+
+    # ---------- Failure injection (STEP 7 scale-compliance) ----------
+    # Deterministic chaos for load tests and SLO drills. OFF by default and
+    # hard-refused in production (validate_security). Rules are exact-path
+    # matches with a fixed effect — never probabilistic. See
+    # docs/FAILURE-INJECTION.md.
+    chaos_enabled: bool = False
+    chaos_rules_json: str = ""
+
+    # ---------- Scheduler metrics (STEP 7 scale-compliance) ----------
+    # The background worker is a separate process, so its job metrics need a
+    # scrape target of their own. prometheus_client.start_http_server binds
+    # this port on the scheduler container (compose-network only). 0 disables.
+    scheduler_metrics_port: int = 8001
+
+    # ---------- security.txt (RFC 9116, STEP 9) ----------
+    # Contact for security researchers and buyers' security teams. Empty = the
+    # /.well-known/security.txt endpoint returns 404 (a contact-less file is
+    # worse than none). Set it to a monitored email or https:// URL in
+    # production.
+    security_contact: str = ""
+
+    # ---------- Licensing (STEP 9) ----------
+    # HMAC key for self-hosted/white-label license tokens. Falls back to
+    # JWT_SECRET when empty (acceptable for a single deployment; set a distinct
+    # key when reselling licenses across deployments).
+    license_secret: str = ""
+
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() in {"production", "prod"}
 
     @property
+    def is_staging(self) -> bool:
+        """True for the dedicated pre-production environment.
+
+        Staging is deliberately NOT production: it may run the real-call E2E
+        guard, may enable failure injection, and does not hard-fail readiness
+        on missing provider keys. It is also NOT development: schema is owned
+        by Alembic (no ``create_all``), and its secrets must be its own.
+        """
+        return self.app_env.lower() == "staging"
+
+    @property
+    def uses_https(self) -> bool:
+        """Whether the deployment is served over TLS.
+
+        Drives the Secure cookie flag and the HSTS header from the actual URL
+        scheme rather than a guess about the environment: a staging box that
+        is TLS-terminated gets Secure cookies and HSTS exactly like
+        production.
+        """
+        return self.public_base_url.startswith("https://")
+
+    @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def trusted_host_list(self) -> list[str]:
+        """Hostnames allowed in the Host header. Empty list = middleware off."""
+        return [h.strip().lower() for h in self.trusted_hosts.split(",") if h.strip()]
+
+    @property
+    def e2e_caller_list(self) -> list[str]:
+        return [n.strip() for n in self.e2e_allowed_callers.split(",") if n.strip()]
+
+    @property
+    def cost_unit_prices(self) -> dict[str, int]:
+        """The parsed operator price table, or ``{}`` when unset/malformed.
+
+        Malformed JSON is not an exception here — startup validation reports it
+        and the cost layer treats every unknown/missing price as UNKNOWN.
+        """
+        raw = (self.cost_unit_prices_json or "").strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(parsed, dict):
+            return {}
+        return {str(k): int(v) for k, v in parsed.items() if isinstance(v, (int, float))}
+
+    @property
+    def chaos_rules(self) -> list[dict]:
+        """The parsed chaos rule list, or ``[]`` when unset/malformed."""
+        raw = (self.chaos_rules_json or "").strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        return [r for r in parsed if isinstance(r, dict)]
 
     # ---------- CRM integrations (STEP 5) ----------
     # Application-level encryption of provider credentials at rest.
@@ -157,6 +369,13 @@ class Settings(BaseSettings):
     crm_sync_interval_seconds: int = 20
     crm_sync_batch_size: int = 20
     crm_stuck_sync_minutes: int = 15
+
+    # Step 6 (scale-compliance): how long a reminder-send lease is valid. A
+    # worker claims a reminder, sends the SMS, and clears the lease; if it
+    # dies mid-send the reaper reclaims the row after this many seconds. Long
+    # enough to cover a slow Twilio call, short enough that a dead worker
+    # cannot block a customer's reminder indefinitely.
+    reminder_lease_seconds: int = 300
 
     # Inbound provider webhooks: how much clock skew to tolerate before an
     # event is treated as a replay.
@@ -221,6 +440,55 @@ class Settings(BaseSettings):
         """
         problems: list[str] = []
 
+        # ---- Deployment environment (STEP 8) ----
+        if self.app_env.lower() not in KNOWN_APP_ENVS:
+            problems.append(
+                f"APP_ENV must be one of {sorted(KNOWN_APP_ENVS)}, got "
+                f"{self.app_env!r}"
+            )
+
+        if self.is_production:
+            if self.rate_limit_enabled is not True:
+                problems.append(
+                    "RATE_LIMIT_ENABLED must be true in production; the "
+                    "limiter fails closed and must not be silently off"
+                )
+            if (self.log_level or "").upper() == "DEBUG":
+                problems.append(
+                    "LOG_LEVEL=DEBUG is not allowed in production; verbose "
+                    "logs can leak caller data"
+                )
+            if "localhost" in self.public_base_url or "127.0.0.1" in self.public_base_url:
+                problems.append(
+                    "PUBLIC_BASE_URL must be a public https URL in production, "
+                    "not localhost"
+                )
+            for origin in self.cors_origin_list:
+                if not origin.startswith("https://"):
+                    problems.append(
+                        f"CORS_ORIGINS entry {origin!r} must use https in "
+                        "production; development origins cannot reach prod"
+                    )
+            # Placeholder secrets: an obviously-unset credential must not
+            # boot a production deployment that would then fail on live calls.
+            for field, value in (
+                ("SECRET_KEY", self.secret_key),
+                ("JWT_SECRET", self.jwt_secret),
+                ("TWILIO_AUTH_TOKEN", self.twilio_auth_token),
+                ("DEEPGRAM_API_KEY", self.deepgram_api_key),
+                ("ELEVENLABS_API_KEY", self.elevenlabs_api_key),
+                ("OPENAI_API_KEY", self.openai_api_key),
+                ("ANTHROPIC_API_KEY", self.anthropic_api_key),
+                ("GOOGLE_API_KEY", self.google_api_key),
+                ("STRIPE_SECRET_KEY", self.stripe_secret_key),
+                ("STRIPE_WEBHOOK_SECRET", self.stripe_webhook_secret),
+            ):
+                if value and _looks_placeholder(value):
+                    problems.append(
+                        f"{field} looks like a placeholder and must be "
+                        "replaced in production"
+                    )
+
         if self.jwt_secret == Settings.model_fields["jwt_secret"].default:
             problems.append("JWT_SECRET is still the built-in default")
         if len(self.jwt_secret) < 32:
@@ -233,6 +501,26 @@ class Settings(BaseSettings):
             problems.append("PUBLIC_BASE_URL must use https in production")
         if self.is_production and not self.twilio_auth_token:
             problems.append("TWILIO_AUTH_TOKEN is required to verify webhooks")
+        if self.is_production and self.twilio_skip_webhook_verify:
+            problems.append(
+                "TWILIO_SKIP_WEBHOOK_VERIFY must not be enabled in production; "
+                "it disables Twilio webhook signature verification"
+            )
+
+        if self.e2e_enabled:
+            if self.is_production:
+                problems.append(
+                    "E2E_ENABLED must not be set in production; real-call E2E "
+                    "is operator-run in a test environment only"
+                )
+            if not self.e2e_test_number:
+                problems.append(
+                    "E2E_TEST_NUMBER is required when E2E_ENABLED is set"
+                )
+            if not self.e2e_caller_list:
+                problems.append(
+                    "E2E_ALLOWED_CALLERS is required when E2E_ENABLED is set"
+                )
 
         if self.knowledge_storage_backend == "s3" and not self.knowledge_s3_bucket:
             problems.append("KNOWLEDGE_S3_BUCKET is required when the backend is s3")
@@ -292,6 +580,41 @@ class Settings(BaseSettings):
                 "every plan limit would be ignored"
             )
 
+        # ---- Cost awareness (STEP 7 scale-compliance) ----
+        if self.cost_unit_prices_json.strip():
+            try:
+                parsed = json.loads(self.cost_unit_prices_json)
+            except json.JSONDecodeError as exc:
+                problems.append(f"COST_UNIT_PRICES is not valid JSON: {exc}")
+            else:
+                if not isinstance(parsed, dict):
+                    problems.append("COST_UNIT_PRICES must be a JSON object")
+                else:
+                    for key, value in parsed.items():
+                        if not isinstance(value, (int, float)) or value < 0:
+                            problems.append(
+                                f"COST_UNIT_PRICES[{key!r}] must be a non-negative number"
+                            )
+
+        # ---- Failure injection (STEP 7 scale-compliance) ----
+        if self.chaos_enabled:
+            if self.is_production:
+                problems.append(
+                    "CHAOS_ENABLED must not be set in production; failure "
+                    "injection is for load tests and SLO drills only"
+                )
+            if not self.chaos_rules:
+                problems.append(
+                    "CHAOS_RULES is required when CHAOS_ENABLED is set"
+                )
+        elif self.chaos_rules_json.strip():
+            # Rules configured but the switch off: harmless, but worth saying
+            # so an operator who expects chaos to be live notices it is not.
+            try:
+                json.loads(self.chaos_rules_json)
+            except json.JSONDecodeError as exc:
+                problems.append(f"CHAOS_RULES is not valid JSON: {exc}")
+
         return problems
 
     @property
@@ -306,4 +629,3 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
-

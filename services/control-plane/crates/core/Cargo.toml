@@ -1,0 +1,10 @@
+[package]
+name = "voxdesk-control"
+version = "0.1.0"
+edition = "2021"
+description = "Concurrency + session-state core for the VoxDesk control plane (Phase 2)."
+license = "UNLICENSED"
+
+# Deliberately dependency-free: these primitives are the part of the control
+# plane that must never depend on a runtime, so they are testable anywhere.
+[dependencies]

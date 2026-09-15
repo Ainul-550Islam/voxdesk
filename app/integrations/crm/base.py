@@ -323,4 +323,3 @@ def _retry_after(response: httpx.Response) -> float | None:
     #: Cap it. A provider claiming a one-hour wait should not pin a worker
     #: slot; our scheduler will pick the row up again later regardless.
     return min(value, 300.0)
-

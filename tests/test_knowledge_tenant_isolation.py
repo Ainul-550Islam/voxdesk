@@ -334,4 +334,3 @@ async def test_a_filter_cannot_override_the_tenant_predicate(db, tenant_b, doc_a
             db, tenant_id=tenant_b.id, query="Northwind",
             filters={"tenant_id": str(doc_a.tenant_id)},
         )
-

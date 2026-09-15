@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package voxdesk.contracts.v1;
+
+import "google/protobuf/timestamp.proto";
+import "voxdesk/contracts/v1/common.proto";
+
+option go_package = "voxdesk/contracts/gen/go/contractsv1";
+
+// Outbound integration/webhook delivery contract. Mirrors the CrmEvent /
+// CrmSync split in app/db/models.py: the business fact is emitted once
+// (idempotency-keyed), and delivery fan-out to each provider integration is a
+// separate concern with its own outcome receipt.
+
+// Mirrors app.db.models.CrmEventType. Member names match the Python enum
+// member names (what SQLAlchemy persists); each maps to the dotted published
+// value shown in the comment -- CALL_COMPLETED -> "call.completed" and so on.
+// scripts/verify_contracts.py asserts this mapping so a renamed member cannot
+// silently change the wire string a tenant's webhook receiver depends on.
+enum CrmEventType {
+  CRM_EVENT_TYPE_UNSPECIFIED = 0;
+  CRM_EVENT_TYPE_CALL_COMPLETED = 1;        // "call.completed"
+  CRM_EVENT_TYPE_CALL_MISSED = 2;           // "call.missed"
+  CRM_EVENT_TYPE_LEAD_CREATED = 3;          // "lead.created"
+  CRM_EVENT_TYPE_LEAD_UPDATED = 4;          // "lead.updated"
+  CRM_EVENT_TYPE_APPOINTMENT_BOOKED = 5;    // "appointment.booked"
+  CRM_EVENT_TYPE_APPOINTMENT_CANCELLED = 6; // "appointment.cancelled"
+  CRM_EVENT_TYPE_TRANSFER_COMPLETED = 7;    // "transfer.completed"
+}
+
+// Mirrors app.db.models.CrmEntityType.
+enum CrmEntityType {
+  CRM_ENTITY_TYPE_UNSPECIFIED = 0;
+  CRM_ENTITY_TYPE_CALL = 1;
+  CRM_ENTITY_TYPE_LEAD = 2;
+  CRM_ENTITY_TYPE_APPOINTMENT = 3;
+}
+
+// Mirrors app.db.models.CrmSyncStatus (the delivery outcome vocabulary).
+enum CrmSyncStatus {
+  CRM_SYNC_STATUS_UNSPECIFIED = 0;
+  CRM_SYNC_STATUS_PENDING = 1;
+  CRM_SYNC_STATUS_PROCESSING = 2;
+  CRM_SYNC_STATUS_SYNCED = 3;
+  CRM_SYNC_STATUS_FAILED = 4;
+  CRM_SYNC_STATUS_PERMANENT_FAILURE = 5;
+}
+
+// One delivery of a normalized business event to one provider integration.
+// `payload` is the already-scrubbed JSON body; it never carries a credential
+// or a raw provider body. `provider` uses the closed app.db.models.
+// CrmProviderType vocabulary: gohighlevel | hubspot | jobber | webhook.
+message WebhookDelivery {
+  TenantContext tenant = 1;
+  Idempotency idempotency = 2;
+  string provider = 3;
+  CrmEventType event_type = 4;
+  CrmEntityType entity_type = 5;
+  Uuid entity_id = 6;
+  int32 payload_version = 7;
+  bytes payload = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+// Delivery outcome for one attempt. `external_id` is the proof of a SYNCED
+// claim, mirroring app.db.models.CrmSync.external_id being written in the same
+// commit that sets SYNCED.
+message WebhookDeliveryReceipt {
+  TenantContext tenant = 1;
+  Uuid entity_id = 2;
+  string provider = 3;
+  CrmSyncStatus status = 4;
+  optional string external_id = 5;
+  int32 attempt_count = 6;
+  optional string last_error = 7;
+  optional string last_error_code = 8;
+}

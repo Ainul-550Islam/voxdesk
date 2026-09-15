@@ -79,11 +79,12 @@ async def verify_twilio_request(request: Request) -> bool:
     and the messaging webhooks need it and there must be exactly one
     implementation to review.
 
-    Bypassed when APP_ENV=development so webhooks can be exercised with curl.
-    Production must never run with the development flag -- the startup gate in
-    app/main.py enforces the rest of the production configuration.
+    Verification is enabled unless the explicit dev-only flag
+    TWILIO_SKIP_WEBHOOK_VERIFY is set. That flag defaults to false and the
+    startup gate in app/main.py refuses to run production with it enabled, so
+    a misconfigured environment can never silently disable verification.
     """
-    if settings.app_env == "development":
+    if settings.twilio_skip_webhook_verify:
         return True
 
     from twilio.request_validator import RequestValidator
@@ -92,4 +93,3 @@ async def verify_twilio_request(request: Request) -> bool:
     form = await request.form()
     signature = request.headers.get("X-Twilio-Signature", "")
     return validator.validate(str(request.url), dict(form), signature)
-

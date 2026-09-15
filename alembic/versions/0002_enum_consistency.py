@@ -127,4 +127,3 @@ def downgrade() -> None:
     )
     op.execute("ALTER TABLE calls ALTER COLUMN status SET DEFAULT 'RINGING'")
     op.execute("DROP TYPE callstatus_new")
-

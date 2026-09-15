@@ -307,8 +307,12 @@ async def prune_receipts(session: AsyncSession, *, older_than_days: int = 30) ->
 
     cutoff = datetime.utcnow() - timedelta(days=older_than_days)
     result = await session.execute(
-        delete(CrmWebhookReceipt).where(CrmWebhookReceipt.received_at < cutoff)
+        delete(CrmWebhookReceipt)
+        .where(CrmWebhookReceipt.received_at < cutoff)
+        # Never let SQLAlchemy "evaluate" the predicate against in-memory
+        # rows: `received_at` is a timezone-aware column and comparing an
+        # aware object with this naive cutoff raises TypeError.
+        .execution_options(synchronize_session=False)
     )
     await session.commit()
     return result.rowcount or 0
-

@@ -68,4 +68,3 @@ def is_compatible(stored_identity: str | None, embedder: Embedder) -> bool:
     gets shipped.
     """
     return bool(stored_identity) and stored_identity == embedder.identity
-

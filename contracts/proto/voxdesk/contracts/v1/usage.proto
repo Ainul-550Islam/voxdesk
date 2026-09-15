@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package voxdesk.contracts.v1;
+
+import "google/protobuf/timestamp.proto";
+import "voxdesk/contracts/v1/common.proto";
+
+option go_package = "voxdesk/contracts/gen/go/contractsv1";
+
+// Usage metering contract. Published events are the financial record of truth
+// and are consumed to build app.db.models.UsageSummary, which must remain
+// rebuildable from these events alone (the property that makes a metering bug
+// recoverable rather than a corrupted ledger).
+
+// Mirrors app.db.models.UsageMetric (what is counted). Values are the wire
+// names used in the API and in plan configuration.
+enum UsageMetric {
+  USAGE_METRIC_UNSPECIFIED = 0;
+  USAGE_METRIC_VOICE_MINUTE = 1;
+  USAGE_METRIC_SMS_SEGMENT = 2;
+  USAGE_METRIC_LLM_TOKEN = 3;
+  USAGE_METRIC_TTS_CHARACTER = 4;
+}
+
+// Mirrors app.db.models.UsageEventType (why it was counted). One metric has
+// several sources, and the source is what makes a disputed invoice answerable.
+// MANUAL_ADJUSTMENT is the only event whose quantity may be negative: a signed
+// correction, never a destructive edit.
+enum UsageEventType {
+  USAGE_EVENT_TYPE_UNSPECIFIED = 0;
+  USAGE_EVENT_TYPE_VOICE_MINUTE_USED = 1;
+  USAGE_EVENT_TYPE_SMS_SEGMENT_USED = 2;
+  USAGE_EVENT_TYPE_LLM_TOKEN_USED = 3;
+  USAGE_EVENT_TYPE_TTS_CHARACTER_USED = 4;
+  USAGE_EVENT_TYPE_MANUAL_ADJUSTMENT = 5;
+}
+
+// One immutable, idempotency-keyed unit of consumption. Mirrors
+// app.db.models.UsageEvent exactly where it matters: `quantity` is an integer
+// in the metric's smallest unit (SECONDS for voice, segments for SMS, tokens,
+// characters) -- never a float, and never minutes -- so a total always matches
+// the sum of its parts.
+message UsageRecorded {
+  TenantContext tenant = 1;
+  Idempotency idempotency = 2;
+  // "YYYY-MM" of the billing period, derived from the subscription anchor
+  // (app/billing/periods.py). A label, compared and grouped, never arithmetic.
+  string billing_period = 3;
+  UsageMetric metric = 4;
+  UsageEventType event_type = 5;
+  // The call, message or document this came from; makes an invoice line
+  // traceable to the thing the customer actually did.
+  Uuid source_entity_id = 6;
+  optional string source_reference = 7;
+  int64 quantity = 8;
+  string unit = 9;
+  // Safe context: direction, transferred leg, channel. Never a transcript,
+  // never a credential.
+  map<string, string> metadata = 10;
+  google.protobuf.Timestamp created_at = 11;
+}
+
+// Acknowledgment of a recorded usage event. Carries the tenant context so the
+// emitter can assert it was accepted for the tenant it reported.
+message UsageRecordAck {
+  TenantContext tenant = 1;
+  bool accepted = 2;
+  ErrorInfo error = 3;
+}

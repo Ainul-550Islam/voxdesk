@@ -636,4 +636,3 @@ WHERE processed = false;
 8. **The reconciliation worker compares local records to themselves.** It
    detects internal inconsistency, not disagreement with Stripe's own totals —
    that needs the metered-billing integration in (1).
-

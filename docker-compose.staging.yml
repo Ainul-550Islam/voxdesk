@@ -1,0 +1,250 @@
+# Staging compose — production-shaped, explicitly non-production.
+#
+#   docker compose -f docker-compose.staging.yml --env-file .env.staging up -d --build
+#
+# Staging mirrors docker-compose.prod.yml in structure (same services, same
+# healthchecks, same depends_on ordering, same Alembic-owned schema) so a
+# change that works here works in production. It differs on the things that
+# MUST differ:
+#
+#   * name: voxdesk-staging      -> a distinct Compose project, so staging
+#                                   volumes/containers/networks can never be
+#                                   mistaken for the production project.
+#   * APP_ENV=staging            -> schema still owned by Alembic (no create_all)
+#   * separate volumes           -> pgdata_staging / redisdata_staging / ...
+#   * separate host ports        -> API :8001, Grafana :3001, Caddy :8080/:8443,
+#                                   so staging can live on the same host as prod
+#   * its own env file           -> .env.staging (never copy .env from prod)
+#   * its own backups dir        -> ./backups-staging
+#
+# Exposure model (hardened): Caddy is the ONLY public entry point (host ports
+# 8080/8443). The API and Grafana are bound to host loopback only. PostgreSQL,
+# Redis, Prometheus, the scheduler and the backup worker publish NO host ports
+# and are reachable only on the internal staging network.
+#
+# Secrets: this file contains NO secret values. POSTGRES_PASSWORD and
+# GRAFANA_ADMIN_PASSWORD are REQUIRED from .env.staging (the `:?` form makes
+# `docker compose` fail loudly when they are unset) and are never printed.
+#
+# Staging is where the manual real-call E2E (Step 5) and SLO drills (Step 7
+# chaos) run. E2E is allowed here (it is refused in production), default off.
+name: voxdesk-staging
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    stop_grace_period: 30s     # let a checkpoint finish on SIGTERM
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-voxdesk}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env.staging}
+      POSTGRES_DB: ${POSTGRES_DB:-voxdesk}
+    volumes:
+      - pgdata_staging:/var/lib/postgresql/data
+    networks: [staging]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-voxdesk}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata_staging:/data
+    networks: [staging]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  api:
+    build: .
+    restart: unless-stopped
+    init: true                 # reap uvicorn worker children (PID 1 hygiene)
+    stop_grace_period: 30s     # let in-flight requests drain on SIGTERM
+    env_file: .env.staging
+    environment:
+      APP_ENV: staging
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-voxdesk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env.staging}@db:5432/${POSTGRES_DB:-voxdesk}
+      REDIS_URL: redis://redis:6379/0
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      LOG_FORMAT: json
+      # Step 5 real-call E2E — explicitly configurable for staging, default
+      # OFF. Production compose never passes these through, so there is no
+      # production-equivalent switch that could be flipped accidentally.
+      E2E_ENABLED: ${E2E_ENABLED:-false}
+      E2E_TEST_NUMBER: ${E2E_TEST_NUMBER:-}
+      E2E_ALLOWED_CALLERS: ${E2E_ALLOWED_CALLERS:-}
+    ports:
+      - "127.0.0.1:8001:8000"   # host-loopback; distinct from production :8000
+    volumes:
+      - ./secrets-staging:/srv/secrets:ro
+      - knowledge_staging:/srv/var/knowledge
+    networks: [staging]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s       # entrypoint runs migrations before serving
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  scheduler:
+    build: .
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    env_file: .env.staging
+    environment:
+      APP_ENV: staging
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-voxdesk}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env.staging}@db:5432/${POSTGRES_DB:-voxdesk}
+      REDIS_URL: redis://redis:6379/0
+    entrypoint: ["python", "-m", "scripts.scheduler"]
+    volumes:
+      - ./secrets-staging:/srv/secrets:ro
+    networks: [staging]
+    # The scheduler exposes /metrics on SCHEDULER_METRICS_PORT (default 8001);
+    # probing it is a liveness signal for the worker process + its metrics
+    # server (job-success gauges are exported there too).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/metrics', timeout=5).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: .env.staging      # so RCLONE_REMOTE (and any backup env) is visible
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env.staging}
+      POSTGRES_USER: ${POSTGRES_USER:-voxdesk}
+      POSTGRES_DB: ${POSTGRES_DB:-voxdesk}
+    volumes:
+      - ./backups-staging:/backups
+    networks: [staging]
+    entrypoint: ["/bin/sh", "-c"]
+    # Same verified-dump loop as production, into the staging backups dir.
+    # NOTE: this image ships pg_dump but NOT rclone; the optional off-site
+    # sync line therefore no-ops (|| true) until the backup image includes
+    # rclone — that change lives in the Dockerfile, outside this file's scope.
+    command: |
+      while true; do
+        sleep 3600
+        if [ "$$(date +%H)" = "02" ]; then
+          DUMP="/backups/voxdesk-staging-$$(date +%F).dump"
+          if pg_dump -h db -U "$${POSTGRES_USER}" -Fc "$${POSTGRES_DB}" > "$${DUMP}" \
+              && [ -s "$${DUMP}" ] \
+              && pg_restore --list "$${DUMP}" > /dev/null 2>&1; then
+            echo "staging backup ok: $${DUMP}"
+            ls -1 /backups/*.dump | head -n -14 | xargs -r rm
+            if [ -n "$${RCLONE_REMOTE:-}" ]; then
+              rclone copy /backups "$${RCLONE_REMOTE}"/voxdesk-backups-staging || true
+            fi
+          else
+            echo "STAGING BACKUP FAILED (dump unreadable or empty); keeping previous dumps" >&2
+          fi
+        fi
+      done
+    depends_on:
+      db:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    restart: unless-stopped
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./observability/slos.yml:/etc/prometheus/slos.yml:ro
+      - promdata_staging:/prometheus
+    networks: [staging]
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    depends_on:
+      api:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set in .env.staging}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_ALLOW_ORG_CREATE: "false"
+    volumes:
+      - grafdata_staging:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks: [staging]
+    ports:
+      - "127.0.0.1:3001:3000"   # host-loopback; distinct from production :3000
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      prometheus:
+        condition: service_started
+
+  caddy:
+    image: caddy:2.9-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:-}
+      GRAFANA_DOMAIN: ${GRAFANA_DOMAIN:-}
+    ports:
+      - "8080:80"               # staging HTTP (distinct from production 80/443)
+      - "8443:443"              # staging HTTPS (when DOMAIN is set)
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data_staging:/data
+      - caddy_config_staging:/config
+    networks: [staging]
+    depends_on:
+      api:
+        condition: service_healthy
+
+networks:
+  staging:
+    name: voxdesk-staging-internal
+    driver: bridge
+    # Intentionally NOT `internal: true`: the API/scheduler must reach external
+    # providers (Twilio, Deepgram, ElevenLabs, LLM APIs, Stripe) over the
+    # public internet. Egress policy is enforced at the infrastructure layer
+    # (see docs/STEP10-EGRESS-POLICY.md), not by this network.
+
+volumes:
+  pgdata_staging:
+  redisdata_staging:
+  knowledge_staging:
+  promdata_staging:
+  grafdata_staging:
+  caddy_data_staging:
+  caddy_config_staging:

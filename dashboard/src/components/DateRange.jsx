@@ -69,4 +69,3 @@ export default function DateRange({ value, onChange, timezone }) {
     </div>
   )
 }
-

@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, time
 
 from sqlalchemy import (
-    Boolean, DateTime, Enum, Float, ForeignKey, Index, Integer, JSON, String, Text, Time, UniqueConstraint,
+    Boolean, DateTime, Enum, Float, ForeignKey, Index, Integer, JSON, String, Text, Time, UniqueConstraint, false,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -128,6 +128,11 @@ class AuditAction(str, enum.Enum):
     BILLING_PLAN_CHANGED = "billing_plan_changed"
     BILLING_LIMIT_HIT = "billing_limit_hit"
     BILLING_ADJUSTMENT = "billing_adjustment"
+    # STEP 9. Data-subject rights and licensing; detail carries counts and
+    # plan codes only -- never personal data beyond what the action implies.
+    GDPR_EXPORT = "gdpr_export"
+    GDPR_ERASURE = "gdpr_erasure"
+    LICENSE_ISSUED = "license_issued"
 
 
 class Speaker(str, enum.Enum):
@@ -217,11 +222,29 @@ class Tenant(Base):
         Text, default="This call may be recorded for quality purposes."
     )
 
+    # Data-subject rights (STEP 9). Consent provenance is recorded when the
+    # business captures opt-in; erasure_requested_at marks a GDPR erasure
+    # request (set by app/api/gdpr_routes.py) for operator completion.
+    data_consent_recorded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    data_consent_source: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    erasure_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # Billing
     plan: Mapped[str] = mapped_column(String(32), default="starter")   # starter / pro
     included_minutes: Mapped[int] = mapped_column(Integer, default=500)
     minutes_used: Mapped[float] = mapped_column(Float, default=0.0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # Real-call E2E readiness (STEP 5). `is_test_tenant` marks a tenant that a
+    # human operator created for a genuine, manual end-to-end Twilio call. It is
+    # the single source of truth the E2E guard trusts; it has no effect on
+    # anything else in the product. Defaults to False so no existing tenant is
+    # ever silently marked as a test tenant.
+    is_test_tenant: Mapped[bool] = mapped_column(Boolean, server_default=false(), default=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
@@ -525,6 +548,16 @@ class Reminder(Base):
     sent: Mapped[bool] = mapped_column(Boolean, default=False)
     confirmed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Step 6 (scale-compliance): a durable send lease. The worker that wins the
+    # atomic claim (see `app/integrations/reminders.py`) stamps these before
+    # sending; a crashed worker's lease is reclaimed by the reaper. Without
+    # this, two overlapping ticks (or a crash between the SMS send and the
+    # commit) would text the customer twice.
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    claimed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 # =============================================================================
@@ -1138,6 +1171,36 @@ class CrmWebhookReceipt(Base):
     provider: Mapped[CrmProviderType] = mapped_column(Enum(CrmProviderType), nullable=False)
     provider_event_id: Mapped[str] = mapped_column(String(255), nullable=False)
     event_type: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, nullable=False
+    )
+
+
+class MessageWebhookReceipt(Base):
+    """
+    Inbound Twilio message events (SMS/WhatsApp) we have already processed.
+
+    The messaging channel was the one inbound webhook without durable replay
+    protection: a redelivered message would have been appended as a second turn
+    and answered a second time (extra LLM spend + a duplicate reply SMS). The
+    unique constraint on `(tenant_id, channel, provider_message_id)` turns the
+    redelivery into a no-op. Rows are pruned by age, not kept forever.
+    """
+    __tablename__ = "message_webhook_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "channel", "provider_message_id",
+            name="uq_message_receipt_event",
+        ),
+        Index("ix_message_receipt_received", "received_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    channel: Mapped[str] = mapped_column(String(16), nullable=False)   # sms | whatsapp
+    provider_message_id: Mapped[str] = mapped_column(String(255), nullable=False)
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, nullable=False
     )
@@ -1837,4 +1900,3 @@ class BillingWebhookReceipt(Base):
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, nullable=False
     )
-

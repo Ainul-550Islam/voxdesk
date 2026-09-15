@@ -362,4 +362,3 @@ async def test_purge_removes_the_row_the_chunks_and_the_file(db, tenant_a):
         == 0
     )
     assert not await get_storage().exists(key)
-

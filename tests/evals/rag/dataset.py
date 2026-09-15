@@ -206,4 +206,3 @@ class Corpus:
 
     acme: list = field(default_factory=list)
     beta: list = field(default_factory=list)
-

@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package voxdesk.contracts.v1;
+
+import "google/protobuf/timestamp.proto";
+import "voxdesk/contracts/v1/common.proto";
+
+option go_package = "voxdesk/contracts/gen/go/contractsv1";
+
+// Media-plane control contract. The media plane (future C++ WebRTC service,
+// roadmap Phase 3) is the server for these RPCs; the agent pipeline (Pipecat)
+// and the browser wallboard are clients. Events such as TranscriptionTap are
+// published on the internal event bus rather than returned over RPC.
+//
+// Tenant scoping is defense in depth here: every message carries the tenant
+// context, and the media plane MUST refuse a join whose call_id is not owned
+// by that tenant (the same ownership rule the API's call endpoints enforce).
+
+// Audio-only today; VIDEO is reserved for the browser wallboard and must not
+// be assumed available by a consumer that predates it.
+enum TrackKind {
+  TRACK_KIND_UNSPECIFIED = 0;
+  TRACK_KIND_AUDIO = 1;
+  TRACK_KIND_VIDEO = 2;
+}
+
+// Requests the media plane to admit one participant (an agent pipeline leg or
+// a browser) to an established call session.
+message MediaJoinRequest {
+  TenantContext tenant = 1;
+  Uuid call_id = 2;
+  string participant_id = 3;
+  repeated TrackKind kinds = 4;
+}
+
+message MediaJoinResponse {
+  TenantContext tenant = 1;
+  Uuid call_id = 2;
+  bool admitted = 3;
+  string participant_id = 4;
+  ErrorInfo error = 5;
+}
+
+message MediaLeaveRequest {
+  TenantContext tenant = 1;
+  Uuid call_id = 2;
+  string participant_id = 3;
+}
+
+message MediaLeaveResponse {
+  TenantContext tenant = 1;
+  Uuid call_id = 2;
+  string participant_id = 3;
+  ErrorInfo error = 4;
+}
+
+// A transcript turn produced on the media path. Mirrors app.db.models.Turn
+// (speaker / text / latency_ms); consumers must not assume ordering without
+// the created_at timestamp.
+message TranscriptionTap {
+  TenantContext tenant = 1;
+  Uuid call_id = 2;
+  Speaker speaker = 3;
+  string text = 4;
+  optional double latency_ms = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+// Media control service (RPC transport). The media plane is the server.
+service MediaControl {
+  rpc Join(MediaJoinRequest) returns (MediaJoinResponse);
+  rpc Leave(MediaLeaveRequest) returns (MediaLeaveResponse);
+}

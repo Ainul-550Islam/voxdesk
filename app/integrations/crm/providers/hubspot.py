@@ -35,6 +35,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from app.core.ssrf import OutboundUrlError, validate_outbound_url
 from app.integrations.crm.base import Capability, CrmProvider
 from app.integrations.crm.errors import (
     CrmConfigurationError,
@@ -87,7 +88,13 @@ class HubSpotProvider(CrmProvider):
         return headers
 
     def _base(self) -> str:
-        return (self.context.config or {}).get("base_url") or BASE_URL
+        # SSRF guard (Step 9): this URL receives the bearer access token.
+        base = (self.context.config or {}).get("base_url") or BASE_URL
+        try:
+            validate_outbound_url(base, require_https=True)
+        except OutboundUrlError as exc:
+            raise CrmConfigurationError(str(exc), provider=self.name)
+        return base
 
     # -------------------------------------------------------------- mapping ---
 
@@ -324,4 +331,3 @@ def _escape(text: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
-

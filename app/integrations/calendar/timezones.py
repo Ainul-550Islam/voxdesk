@@ -363,4 +363,3 @@ def format_spoken(moment: datetime, zone: ZoneInfo | str) -> str:
 def format_spoken_date(moment: datetime, zone: ZoneInfo | str) -> str:
     local = to_local(moment, zone)
     return f"{local:%A} {local:%B} {local.day}"
-

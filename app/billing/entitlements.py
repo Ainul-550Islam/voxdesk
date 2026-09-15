@@ -521,4 +521,3 @@ async def threshold_crossed(
         )
         return threshold
     return None
-

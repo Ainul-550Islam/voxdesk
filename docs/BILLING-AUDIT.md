@@ -119,4 +119,3 @@ None.
 `minutes_used` is demoted from authority to **cache**, kept in sync so the
 existing dashboard field and any external reader keep working, while the
 authoritative number is derived from immutable usage events.
-

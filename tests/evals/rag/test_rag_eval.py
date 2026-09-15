@@ -197,7 +197,7 @@ async def test_injected_instructions_are_neutralized_in_the_prompt(
     for marker in INJECTION_MARKERS:
         if marker in context:
             line = next(
-                l for l in context.split("\n") if marker in l
+                line_ for line_ in context.split("\n") if marker in line_
             )
             assert line.startswith("[quoted from document"), (
                 f"{marker!r} reached the prompt as a live instruction"
@@ -213,7 +213,7 @@ async def test_injected_instructions_are_neutralized_in_tool_results(
 
     for marker in INJECTION_MARKERS:
         if marker in summary:
-            line = next(l for l in summary.split("\n") if marker in l)
+            line = next(line_ for line_ in summary.split("\n") if marker in line_)
             assert line.startswith("[quoted from document")
 
 
@@ -294,4 +294,3 @@ async def test_isolation_summary(db, corpus, capsys):
             f"{len(leaks)} leaks {leaks or ''}"
         )
     assert not leaks
-

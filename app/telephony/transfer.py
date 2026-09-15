@@ -110,4 +110,3 @@ async def execute_transfer(
 
     log.info("transfer.executed", call_sid=call_sid, to=to_number)
     return {"ok": True, "to": to_number}
-

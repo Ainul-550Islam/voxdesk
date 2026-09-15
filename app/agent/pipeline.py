@@ -22,9 +22,7 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.serializers.twilio import TwilioFrameSerializer
-from pipecat.services.deepgram.stt import DeepgramSTTService
-from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
-from pipecat.transports.network.fastapi_websocket import (
+from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
     FastAPIWebsocketTransport,
 )
@@ -39,17 +37,47 @@ from app.agent.humanize import (
 )
 from app.agent.llm_factory import build_llm, resolve
 from app.agent.prompts import build_system_prompt
+from app.agent.stt import build_stt
+from app.agent.tts import build_tts
+from app.agent.usage_tracker import UsageTracker
 from app.core.config import settings
-from app.core.i18n import (
-    deepgram_options,
-    elevenlabs_options,
-    llm_language_instruction,
-)
+from app.core.i18n import llm_language_instruction
 from app.core.logging import log
 from app.db.models import Call, Speaker, Tenant, Turn
 
 
+#: STEP 9 (item N): ceiling on tool invocations per live call. The text path
+#: caps tool *rounds* at 4; the voice path caps individual tool calls at 12 so
+#: a prompt-injected or looped model cannot run unlimited paid operations.
+MAX_TOOL_CALLS_PER_CALL = 12
+
+
 async def run_voice_agent(
+    websocket: WebSocket,
+    stream_sid: str,
+    call_sid: str,
+    session: AsyncSession,
+    tenant: Tenant,
+    call: Call,
+) -> None:
+    """Run the voice pipeline inside a call-scoped correlation context.
+
+    Every log line the call produces — provider selection, fallback, TTS
+    normalisation, tool calls, usage, crashes — then carries the same
+    ``call_sid``/``call_id``/``tenant_id``, which is what turns a single
+    call's scattered logs into one trace (Step 7 correlation).
+    """
+    from app.core.correlation import correlation_scope
+
+    with correlation_scope(
+        call_sid=call_sid, call_id=str(call.id), tenant_id=str(tenant.id)
+    ):
+        await _run_voice_agent(
+            websocket, stream_sid, call_sid, session, tenant, call
+        )
+
+
+async def _run_voice_agent(
     websocket: WebSocket,
     stream_sid: str,
     call_sid: str,
@@ -94,23 +122,11 @@ async def run_voice_agent(
     )
 
     # ---------------------------------------------------------- services ---
-    # ভাষা অনুযায়ী STT সেটিং। nova-3 সব ভাষা কভার করে না -> nova-2 fallback।
-    stt_opts = deepgram_options(tenant.language, settings.deepgram_model)
-    stt = DeepgramSTTService(
-        api_key=settings.deepgram_api_key,
-        model=stt_opts["model"],
-        live_options={
-            "encoding": "mulaw",
-            "sample_rate": 8000,
-            "punctuate": stt_opts["punctuate"],
-            "interim_results": True,     # দ্রুত turn detection-এর জন্য বাধ্যতামূলক
-            "endpointing": 250,
-            "smart_format": stt_opts["smart_format"],
-            # filler_words শুধু ইংরেজি মডেলে আছে
-            "filler_words": stt_opts["filler_words"],
-            "language": stt_opts["language"],
-        },
-    )
+    # Each builder validates its own configuration and raises a typed
+    # ProviderError (configuration_error / unsupported_feature) *before* any
+    # network activity, so a misconfigured deployment fails fast instead of
+    # starting a call that can never work.
+    stt = build_stt(tenant)
 
     llm = build_llm(
         provider=choice.provider,
@@ -119,23 +135,11 @@ async def run_voice_agent(
         max_tokens=110,                   # শক্ত সীমা: লম্বা উত্তর = মরা কল
     )
 
-    # অ-ইংরেজি হলে multilingual মডেল বাধ্যতামূলক, নইলে ইংরেজি টানে পড়বে
-    tts_opts = elevenlabs_options(tenant.language, tenant.voice_id)
-    tts = ElevenLabsTTSService(
-        api_key=settings.elevenlabs_api_key,
-        voice_id=tts_opts["voice_id"] or settings.elevenlabs_voice_id,
-        model=tts_opts["model"],                  # flash = সর্বনিম্ন latency
-        sample_rate=8000,
-        params=ElevenLabsTTSService.InputParams(
-            # stability কম = বেশি আবেগ/ওঠানামা = বেশি মানুষের মতো
-            # কিন্তু খুব কম হলে উচ্চারণ অস্থির হয়ে যায়
-            stability=0.45,
-            similarity_boost=0.8,
-            style=0.35,                # সামান্য অভিব্যক্তি
-            use_speaker_boost=True,
-            speed=tenant.speech_speed,  # 1.0 স্বাভাবিক, 1.05-1.1 একটু প্রাণবন্ত
-        ),
-    )
+    # অ-ইংরেজি হলে multilingual মডেল বাধ্যতামূলক, নইলে ইংরেজি টানে পড়বে।
+    # The whole ElevenLabs mapping (model/voice resolution, voice settings,
+    # speech speed) lives in app/agent/tts.py so the provider contract is
+    # isolated from the pipeline.
+    tts = build_tts(tenant)
 
     # ------------------------------------------------------ tool wiring ---
     handlers = FunctionHandlers(session=session, tenant=tenant, call=call)
@@ -147,7 +151,23 @@ async def run_voice_agent(
         log.info("tools.escalation_unavailable", call_sid=call_sid,
                  tenant=tenant.name)
 
+    tool_calls_this_call = 0
+
     async def _tool_bridge(params):
+        # STEP 9 (item N): a per-call ceiling on tool invocations, mirroring the
+        # text path's MAX_TOOL_ROUNDS. The LLM decides what tools to call and is
+        # never trusted to stop on its own -- a prompt-injected or looped model
+        # cannot run unlimited tools (each of which costs money and may touch
+        # the calendar/CRM).
+        nonlocal tool_calls_this_call
+        tool_calls_this_call += 1
+        if tool_calls_this_call > MAX_TOOL_CALLS_PER_CALL:
+            log.warning("tools.per_call_limit", call_sid=call_sid,
+                        calls=tool_calls_this_call)
+            await params.result_callback(
+                {"ok": False, "message": "I can't do that right now. Offer to take a message."}
+            )
+            return
         result = await handlers.dispatch(params.function_name, params.arguments or {})
         log.info("tool.called", name=params.function_name, ok=result.get("ok"),
                  outcome=result.get("outcome"))
@@ -192,16 +212,25 @@ async def run_voice_agent(
         ]
 
     # -------------------------------------------------------- pipeline ----
+    # Step 7 usage trackers. Pass-through processors that tally the measured
+    # AI usage (STT characters, LLM tokens, TTS characters) and feed the
+    # Prometheus counters + cost model. They never raise and never gate a
+    # frame — see app/agent/usage_tracker.py.
+    stt_usage = UsageTracker(track_stt=True)
+    voice_usage = UsageTracker(track_voice=True, provider=choice.provider)
+
     pipeline = Pipeline(
         [
             transport.input(),
             stt,
+            stt_usage,                       # measured transcription characters
             *humanizers,                     # "mm-hmm" মাঝপথে
             context_aggregator.user(),
             llm,
             FillerInjector(),                # tool চলাকালীন "let me check"
             TextNormalizer(),                # সংখ্যা/markdown ঠিক করা
             tts,
+            voice_usage,                     # measured LLM tokens + TTS characters
             transport.output(),
             context_aggregator.assistant(),
         ]
@@ -249,11 +278,36 @@ async def run_voice_agent(
                 )
             )
         call.llm_used = f"{choice.provider}/{choice.model}"
+        # Step 7: the single-call AI-usage trace. Model string and counts are
+        # log fields (correlation), never Prometheus labels — that is what
+        # makes a per-call trace possible without unbounded cardinality.
+        log.info(
+            "call.usage",
+            call_sid=call_sid,
+            tenant=tenant.name,
+            llm=f"{choice.provider}/{choice.model}",
+            stt_chars=stt_usage.snapshot()["stt_chars"],
+            tts_chars=voice_usage.snapshot()["tts_chars"],
+            llm_tokens=voice_usage.snapshot()["llm_tokens"],
+        )
         await session.commit()
 
     runner = PipelineRunner(handle_sigint=False)
     try:
         await runner.run(task)
+    except Exception:
+        # A pipeline-level failure must propagate to the caller (the media
+        # stream handler) so the call can be finalised accurately; it must not
+        # be masked by the persistence step below.
+        log.exception("pipeline.run_failed", call_sid=call_sid,
+                      tenant=tenant.name)
+        raise
     finally:
-        await _persist_turns()
-
+        # Persisting turns is best-effort cleanup. It must never mask the
+        # primary outcome of the call (a provider crash, a hangup) and never
+        # turn a finished call into a crash for the caller.
+        try:
+            await _persist_turns()
+        except Exception:
+            log.exception("pipeline.persist_turns_failed", call_sid=call_sid,
+                          tenant=tenant.name)

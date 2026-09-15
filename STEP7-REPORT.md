@@ -367,4 +367,3 @@ Ruff-এ ৮টা pre-existing warning `routes.py`/`vectorstore.py`/`outbound.p
 STEP 5 ও 6-এও ছিল, "unrelated ফাইল rewrite কোরো না" মেনে ছুঁইনি।
 
 **STEP 1–6-এর কিছুই ভাঙেনি।** ১৪৮১ পূর্ববর্তী টেস্ট অপরিবর্তিতভাবে পাস করে।
-

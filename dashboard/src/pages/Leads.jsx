@@ -212,4 +212,3 @@ function CreateLeadDialog({ open, tenantId, onClose, onCreated }) {
     </Dialog>
   )
 }
-

@@ -44,4 +44,3 @@ async def main(number: str):
 
 if __name__ == "__main__":
     asyncio.run(main(sys.argv[1] if len(sys.argv) > 1 else "+15550001111"))
-

@@ -429,4 +429,3 @@ async def knowledge_stats(
         "embedding_model": settings.knowledge_embedding_model,
         "embedding_dimensions": settings.knowledge_embedding_dimensions,
     }
-

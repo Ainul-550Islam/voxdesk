@@ -59,4 +59,3 @@ class Storage(Protocol):
 
     async def exists(self, key: str) -> bool:
         ...
-

@@ -112,11 +112,10 @@ NEW_AUDIT_ACTIONS = (
 def upgrade() -> None:
     bind = op.get_bind()
 
-    for enum_type in (
-        billing_provider_type, subscription_status, billing_interval,
-        usage_metric, usage_event_type, invoice_status,
-    ):
-        enum_type.create(bind, checkfirst=True)
+    # NOTE: the enum types are created by the `op.create_table` calls below
+    # (SQLAlchemy emits `CREATE TYPE` for enum columns). Creating them first
+    # and then again via the table DDL emits each type twice and fails on a
+    # fresh database with "type ... already exists".
 
     if bind.dialect.name == "postgresql":
         # ALTER TYPE ... ADD VALUE cannot run inside a transaction block on
@@ -463,4 +462,3 @@ def downgrade() -> None:
     # PostgreSQL has no `ALTER TYPE ... DROP VALUE`, and rebuilding the type
     # would mean rewriting every audit_logs row. Unused enum members are
     # harmless; destroying a billing audit trail to tidy one up is not.
-

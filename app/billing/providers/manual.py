@@ -135,4 +135,3 @@ class ManualBillingProvider(BillingProvider):
             connected=True, provider=self.name, latency_ms=0.0,
             safe_message="manual billing; no payment provider configured",
         )
-

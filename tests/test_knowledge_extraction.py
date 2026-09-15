@@ -223,4 +223,3 @@ def test_unsupported_type_is_rejected_with_the_accepted_list():
 def test_empty_file_is_rejected():
     with pytest.raises(ExtractionError):
         extract(b"", filename="empty.txt")
-

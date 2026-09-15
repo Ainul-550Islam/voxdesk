@@ -309,4 +309,3 @@ function CrmPanel({ call, timezone }) {
     </section>
   )
 }
-

@@ -89,7 +89,7 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
         key=REFRESH_COOKIE,
         value=token,
         httponly=True,
-        secure=settings.is_production,   # plain http is needed for local dev
+        secure=settings.uses_https,      # scheme-driven: Secure only over TLS
         samesite="lax",
         max_age=settings.refresh_token_days * 24 * 3600,
         path="/auth",                    # never sent to /api or /telephony
@@ -237,4 +237,3 @@ async def me(ctx: TenantContext = Depends(get_context)):
 async def roles(ctx: TenantContext = Depends(get_context)):
     """The policy itself, so the dashboard can render role pickers correctly."""
     return {"roles": describe_roles()}
-

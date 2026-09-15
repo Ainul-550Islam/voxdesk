@@ -164,3 +164,58 @@ async def test_a_saved_change_is_visible_on_the_next_read(
     ).json()
     assert body["temperature"] == pytest.approx(1.25)
     assert body["speech_speed"] == pytest.approx(1.1)
+
+
+async def test_speech_speed_is_validated_against_the_provider_range(
+    client, admin_a, tenant_a
+):
+    """ElevenLabs voice_settings.speed supports 0.7–1.2. Values outside that
+    range were silently ignored by the provider; they are now rejected at the
+    API boundary so the operator finds out instead of assuming it worked."""
+    headers = await auth_headers(client, admin_a)
+
+    too_slow = await client.patch(
+        f"/api/tenants/{tenant_a.id}/voice",
+        json={"speech_speed": 0.5},
+        headers=headers,
+    )
+    assert too_slow.status_code == 422
+
+    too_fast = await client.patch(
+        f"/api/tenants/{tenant_a.id}/voice",
+        json={"speech_speed": 1.3},
+        headers=headers,
+    )
+    assert too_fast.status_code == 422
+
+    floor = await client.patch(
+        f"/api/tenants/{tenant_a.id}/voice",
+        json={"speech_speed": 0.7},
+        headers=headers,
+    )
+    assert floor.status_code == 200
+    assert floor.json()["speech_speed"] == pytest.approx(0.7)
+
+    ceiling = await client.patch(
+        f"/api/tenants/{tenant_a.id}/voice",
+        json={"speech_speed": 1.2},
+        headers=headers,
+    )
+    assert ceiling.status_code == 200
+    assert ceiling.json()["speech_speed"] == pytest.approx(1.2)
+
+
+async def test_an_out_of_range_speed_write_does_not_touch_the_tenant(
+    client, admin_a, tenant_a
+):
+    """A rejected write must not half-apply: the stored value stays put."""
+    headers = await auth_headers(client, admin_a)
+    before = tenant_a.speech_speed
+
+    resp = await client.patch(
+        f"/api/tenants/{tenant_a.id}/voice",
+        json={"speech_speed": 0.1},
+        headers=headers,
+    )
+    assert resp.status_code == 422
+    assert tenant_a.speech_speed == pytest.approx(before)

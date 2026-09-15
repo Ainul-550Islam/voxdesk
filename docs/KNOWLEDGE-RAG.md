@@ -712,4 +712,3 @@ the transcript for better recall". `tests/test_knowledge_memory_separation.py`
 `KnowledgeChunk` has no foreign key to any conversation table, and an
 end-to-end test where the next caller asks the agent about the previous
 caller's discount and gets nothing.
-

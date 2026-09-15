@@ -48,6 +48,19 @@ def test_policy_rejects_weak_passwords(bad, reason):
         pw.validate_policy(bad)
 
 
+@pytest.mark.parametrize("common", [
+    "Password123456",     # breach-corpus head entry; passes length + 3 classes
+    "Administrator1",     # administrator with a digit
+    "Qwertyuiop123",      # keyboard run + digits
+    "Welcome12345",       # welcome + digits
+])
+def test_policy_rejects_expanded_breach_corpus_entries(common):
+    """STEP 9: the denylist now covers breach-corpus entries that also satisfy
+    the length and character-class gates, so they would otherwise be accepted."""
+    with pytest.raises(pw.PasswordPolicyError):
+        pw.validate_policy(common)
+
+
 def test_policy_rejects_password_containing_email_local_part():
     with pytest.raises(pw.PasswordPolicyError):
         pw.validate_policy("jonathan-Aa1!xyz", email="jonathan@example.com")
@@ -283,4 +296,3 @@ async def test_audit_log_never_stores_the_password(client, db, owner_a):
     blob = " ".join(f"{r.actor_email} {r.detail}" for r in rows)
     assert TEST_PASSWORD not in blob
     assert "Wrong-Password-1!" not in blob
-

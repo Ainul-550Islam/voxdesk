@@ -15,4 +15,3 @@ The pre-STEP-6 `app/integrations/google_calendar.py` is untouched and still
 works; `providers/internal.py` wraps it so existing tenants keep running while
 they migrate to per-tenant OAuth.
 """
-

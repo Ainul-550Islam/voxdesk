@@ -15,9 +15,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select
 
-from app.api.analytics_routes import ELIGIBLE_CALL_SECONDS, _pct, resolve_window
+from app.api.analytics_routes import ELIGIBLE_CALL_SECONDS, _pct
 from app.db.models import (
     Appointment,
     AppointmentStatus,
@@ -752,4 +751,3 @@ class TestAggregationShape:
 
         assert totals["total"] == 5
         assert len(statements) == 1, statements
-

@@ -125,4 +125,3 @@ class OpenAIEmbedder(Embedder):
                 )
 
         raise EmbeddingError(f"embedding failed: {last_error}") from last_error
-

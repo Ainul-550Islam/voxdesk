@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.ssrf import OutboundUrlError, validate_outbound_url
 from app.integrations.crm.base import Capability, CrmProvider
 from app.integrations.crm.errors import (
     CrmConfigurationError,
@@ -95,7 +96,14 @@ class GoHighLevelProvider(CrmProvider):
 
     def _base(self) -> str:
         # Overridable so tests can point at a local stub without patching httpx.
-        return (self.context.config or {}).get("base_url") or BASE_URL
+        # SSRF guard (Step 9): this URL receives the bearer access token, so it
+        # must be https and must not be loopback/link-local/private/metadata.
+        base = (self.context.config or {}).get("base_url") or BASE_URL
+        try:
+            validate_outbound_url(base, require_https=True)
+        except OutboundUrlError as exc:
+            raise CrmConfigurationError(str(exc), provider=self.name)
+        return base
 
     # -------------------------------------------------------------- mapping ---
 
@@ -377,4 +385,3 @@ def _note_body(activity: NormalizedActivity) -> str:
     if activity.body:
         parts.append(activity.body)
     return "\n\n".join(p for p in parts if p)
-

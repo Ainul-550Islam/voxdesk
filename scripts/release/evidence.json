@@ -1,0 +1,322 @@
+{
+  "history": [
+    {
+      "evidence": "security regression suite passed (in 2301-passed suite); bandit -q -r app -x app/integrations/validation -> 0 high, 0 medium, 17 low (pre-existing B105/B110/B311, none in app/release)",
+      "item_id": "security-001",
+      "notes": "SAST + regression tests",
+      "status": "PASS",
+      "superseded": "security-001 (Step 11)",
+      "verification_date": "2026-09-13",
+      "verifier": "ci"
+    },
+    {
+      "evidence": "scripts/audit_dependencies.sh -> OK (accepted residuals nltk/pillow/pytest per docs/SECURITY.md); npm audit --omit=dev --audit-level=high -> 0 vulnerabilities",
+      "item_id": "security-002",
+      "notes": "pip-audit + npm audit",
+      "status": "PASS",
+      "superseded": "security-002 (Step 11)",
+      "verification_date": "2026-09-13",
+      "verifier": "ci"
+    },
+    {
+      "evidence": "PostgreSQL and pg_dump absent in verification environment; staging database backup cannot be executed. Runbook: docs/STEP10-BACKUP-SYNC.md (not executed).",
+      "item_id": "backup-001",
+      "notes": "INFRASTRUCTURE: requires a staging PostgreSQL instance",
+      "status": "BLOCKED",
+      "superseded": "backup-001",
+      "superseded_by": "2026-09-13",
+      "verification_date": "2026-09-13",
+      "verifier": "step12-execution"
+    },
+    {
+      "evidence": "No staging PostgreSQL to restore into and pg_restore absent; restore drill cannot be executed. Runbook: docs/STEP10-BACKUP-SYNC.md (not executed).",
+      "item_id": "restore-001",
+      "notes": "INFRASTRUCTURE: requires staging PostgreSQL + backup artifact",
+      "status": "BLOCKED",
+      "superseded": "restore-001",
+      "superseded_by": "2026-09-13",
+      "verification_date": "2026-09-13",
+      "verifier": "step12-execution"
+    },
+    {
+      "evidence": "Backing up voxdesk_staging@127.0.0.1 -> ./backups/voxdesk-20260913-072808.dump\nBackup verified: ./backups/voxdesk-20260913-072808.dump (200K)",
+      "item_id": "backup-001",
+      "notes": "",
+      "status": "PASS",
+      "superseded": "backup-001",
+      "superseded_by": "2026-09-13",
+      "verification_date": "2026-09-13",
+      "verifier": "ops-toolkit"
+    },
+    {
+      "evidence": "Docker/Compose absent in verification environment (docker: command not found). Static validation only: docker-compose.yml, docker-compose.staging.yml, docker-compose.prod.yml parse as valid YAML. Runtime deployment cannot be executed here.",
+      "item_id": "deploy-001",
+      "notes": "INFRASTRUCTURE: runtime deploy requires Docker + PostgreSQL + Redis",
+      "status": "BLOCKED",
+      "superseded": "deploy-001",
+      "superseded_by": "2026-09-13",
+      "verification_date": "2026-09-13",
+      "verifier": "step12-execution"
+    },
+    {
+      "evidence": "Retention job execution requires a staging database (PostgreSQL) which is unavailable. Retention behavior tests pass (tests/test_retention.py in the 2301-passed suite).",
+      "item_id": "retention-001",
+      "notes": "INFRASTRUCTURE: requires staging DB",
+      "status": "BLOCKED",
+      "superseded": "retention-001",
+      "superseded_by": "2026-09-13",
+      "verification_date": "2026-09-13",
+      "verifier": "step12-execution"
+    },
+    {
+      "evidence": "No running Prometheus/Grafana stack in the verification environment; metrics export not scrape-tested at runtime. Static config (observability/prometheus.yml, alerts.yml, slos.yml) parses valid YAML.",
+      "item_id": "obs-001",
+      "notes": "INFRASTRUCTURE: requires running stack",
+      "status": "BLOCKED",
+      "superseded": "obs-001",
+      "superseded_by": "2026-09-13",
+      "verification_date": "2026-09-13",
+      "verifier": "step12-execution"
+    },
+    {
+      "evidence": "aggregate of build/start/migrate/readiness/smoke/health (BLOCKED)",
+      "item_id": "deploy-001",
+      "notes": "",
+      "status": "BLOCKED",
+      "superseded": "deploy-001",
+      "superseded_by": "2026-09-13",
+      "verification_date": "2026-09-13",
+      "verifier": "ops-toolkit"
+    }
+  ],
+  "items": [
+    {
+      "evidence": "python -m compileall -q app scripts tests -> exit 0; pytest tests/test_imports.py passed (pipecat 0.0.94 import contract)",
+      "item_id": "code-001",
+      "notes": "deterministic; no credentials",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "ci"
+    },
+    {
+      "evidence": "ruff check app scripts tests --select E4,E7,E9,F -> All checks passed",
+      "item_id": "code-002",
+      "notes": "CI-fatal ruleset per pyproject.toml",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "ci"
+    },
+    {
+      "evidence": "pytest tests/ -> 2301 passed, 43 skipped, 0 failed (python 3.13, SQLite in-memory, bcrypt work factor 4)",
+      "item_id": "tests-001",
+      "notes": "deterministic; no real credentials, no network",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "ci"
+    },
+    {
+      "evidence": "npm test -> 362 passed (14 files); npm run build -> exit 0 (vite 6.4.3)",
+      "item_id": "tests-002",
+      "notes": "dashboard vitest + production build",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "ci"
+    },
+    {
+      "evidence": "pytest tests/test_release_gate.py -> 47 passed",
+      "item_id": "tests-003",
+      "notes": "launch-gate logic, offline",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "ci"
+    },
+    {
+      "evidence": "Step 12 re-run on frozen 30b91a1: targeted security suite 422 passed (auth/rbac, tenant isolation x3, SSRF, security_regression, headers, transfer_security, production_safety, e2e_guard, crm_credentials, integration_validation, knowledge extraction/ingest/grounding, config, compliance, data_policy, gdpr, retention); bandit 0 high / 0 medium / 17 low (pre-existing B105/B110/B311, none in app/release); secret scan clean (no tracked .env/.pem/.key, no credential-pattern match)",
+      "item_id": "security-001",
+      "notes": "SAST + regression + secret scan re-run",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "step12-execution"
+    },
+    {
+      "evidence": "Step 12 re-run: scripts/audit_dependencies.sh -> OK (accepted residuals nltk(1)/pillow(35)/pytest(2) per docs/SECURITY.md); npm audit --omit=dev --audit-level=high -> 0 vulnerabilities",
+      "item_id": "security-002",
+      "notes": "pip-audit + npm audit re-run",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "step12-execution"
+    },
+    {
+      "evidence": "pytest tests/test_auth_login.py tests/test_rbac.py passed (in 2301-passed suite)",
+      "item_id": "auth-001",
+      "notes": "deterministic",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "ci"
+    },
+    {
+      "evidence": "pytest tests/test_tenant_isolation.py tests/test_crm_tenant_isolation.py tests/test_knowledge_tenant_isolation.py passed (in 2301-passed suite)",
+      "item_id": "tenant-001",
+      "notes": "deterministic",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "ci"
+    },
+    {
+      "evidence": "scripts/audit_dependencies.sh -> OK: no unexpected vulnerable dependencies; accepted residuals nltk(1)/pillow(35)/pytest(2)",
+      "item_id": "deps-001",
+      "notes": "requirements.txt pinned; pipecat-ai 0.0.94",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "ci"
+    },
+    {
+      "evidence": "models, constraints and unique indexes exercised by the 2301-passed backend suite (SQLite in-memory engine)",
+      "item_id": "db-001",
+      "notes": "deterministic",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "ci"
+    },
+    {
+      "evidence": "alembic heads -> 0011_side_effect_exactly_once (head); release-gate facts.migration_heads() computed the same single head",
+      "item_id": "migrations-001",
+      "notes": "offline revision-graph check",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "ci"
+    },
+    {
+      "evidence": "pytest tests/test_billing_api.py tests/test_billing_metering.py tests/test_billing_subscriptions.py tests/test_billing_voice.py tests/test_side_effect_exactly_once.py passed (in 2301-passed suite)",
+      "item_id": "billing-001",
+      "notes": "billing/metering/idempotency",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "ci"
+    },
+    {
+      "evidence": "pytest tests/test_ssrf.py tests/test_e2e_guard.py passed (in 2301-passed suite)",
+      "item_id": "abuse-001",
+      "notes": "SSRF + E2E guard controls verified by tests",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "ci"
+    },
+    {
+      "evidence": "pytest tests/test_gdpr_routes.py tests/test_retention.py passed (in 2301-passed suite)",
+      "item_id": "privacy-001",
+      "notes": "GDPR/retention behavior verified by tests",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "ci"
+    },
+    {
+      "evidence": "Docker/Compose still absent in this environment; canonical docker-compose.staging.yml build/start/migrate/scheduler steps not executable (BLOCKED). Corroborating real non-Docker staging deployment executed and verified at a7bb02e: PostgreSQL 17.11 + Redis 8.0.2 + uvicorn API + scripts.scheduler; alembic upgrade head (11 migrations -> 0011_side_effect_exactly_once); /health/ready 200 (database+redis ok); smoke 7 pass / 2 warn / 0 fail; /metrics token-gated 401; static compose files parse (PyYAML, 6 files). deploy-001 stays BLOCKED until the Docker Compose path runs on a Docker-capable staging host.",
+      "item_id": "deploy-001",
+      "notes": "",
+      "status": "BLOCKED",
+      "verification_date": "2026-09-13",
+      "verifier": "step14-staging-execution"
+    },
+    {
+      "evidence": "Backing up voxdesk_staging@127.0.0.1 -> ./backups/voxdesk-20260913-072831.dump\nBackup verified: ./backups/voxdesk-20260913-072831.dump (200K)",
+      "item_id": "backup-001",
+      "notes": "",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "ops-toolkit"
+    },
+    {
+      "evidence": "Verifying dump integrity...\nDump verified: backups/voxdesk-20260913-072808.dump\nRestoring backups/voxdesk-20260913-072808.dump into voxdesk_restore_drill@127.0.0.1\nRestore complete and verified: 28 tables in voxdesk_restore_drill.",
+      "item_id": "restore-001",
+      "notes": "",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "ops-toolkit"
+    },
+    {
+      "evidence": "No staging ingress/reverse proxy available in the verification environment; TLS termination and certificate validity cannot be exercised. Not claimable as PASS without a live endpoint.",
+      "item_id": "tls-001",
+      "notes": "INFRASTRUCTURE: P0 - requires staging ingress with TLS",
+      "status": "BLOCKED",
+      "verification_date": "2026-09-13",
+      "verifier": "step12-execution"
+    },
+    {
+      "evidence": "Metrics export verified end-to-end in staging: real Prometheus 2.53.3 scraping voxdesk-api (:8000, bearer token) and voxdesk-scheduler (:8001) - both targets UP, voxdesk_http_requests_total present in TSDB; scripts/verify_observability.py -> PASS (healthy, targets, rules, alerts, SLOs, api+scheduler metrics). Structured JSON logs observed (structlog). REMAINING (blocked): tracing export not configured (SENTRY_DSN unset, no OTel exporter) and Grafana dashboard visual review (human). Not marked PASS for a partially-verified requirement.",
+      "item_id": "obs-001",
+      "notes": "",
+      "status": "BLOCKED",
+      "verification_date": "2026-09-13",
+      "verifier": "step14-staging-execution"
+    },
+    {
+      "evidence": "No running Alertmanager/Grafana in the verification environment; no alert was fired or routed. Alert rules present in observability/alerts.yml (static only).",
+      "item_id": "alert-001",
+      "notes": "INFRASTRUCTURE: requires running stack + a safe test fire",
+      "status": "BLOCKED",
+      "verification_date": "2026-09-13",
+      "verifier": "step12-execution"
+    },
+    {
+      "evidence": "No staging network namespace/container exists to test outbound egress enforcement. The application-level SSRF guard (tests pass) is NOT a substitute for infrastructure egress enforcement per Step 12 G. Policy documented in docs/STEP10-EGRESS-POLICY.md.",
+      "item_id": "egress-001",
+      "notes": "INFRASTRUCTURE: requires staging network + egress controls",
+      "status": "BLOCKED",
+      "verification_date": "2026-09-13",
+      "verifier": "step12-execution"
+    },
+    {
+      "evidence": "Rate-limiting tests pass (tests/test_rate_limit.py in the 2301-passed suite); the 'configured in production gateway' half of the requirement needs the staging/production gateway, which is unavailable. Not marked PASS for a half-completed requirement.",
+      "item_id": "ratelimit-001",
+      "notes": "partially verified (tests only); gateway config pending",
+      "status": "BLOCKED",
+      "verification_date": "2026-09-13",
+      "verifier": "step12-execution"
+    },
+    {
+      "evidence": "Disaster-recovery drill requires a staging deployment (Docker + PostgreSQL) which is unavailable. Runbooks: docs/BCP.md, docs/STEP10-DEPLOY-DRILL.md (not executed).",
+      "item_id": "dr-001",
+      "notes": "INFRASTRUCTURE: requires staging deployment",
+      "status": "BLOCKED",
+      "verification_date": "2026-09-13",
+      "verifier": "step12-execution"
+    },
+    {
+      "evidence": "Controlled incident simulation (provider-outage drill) requires a running staging stack; a tabletop requires human participants. Neither is available in this automated sandbox. Runbooks: docs/INCIDENT-RESPONSE.md, docs/BCP.md.",
+      "item_id": "ir-001",
+      "notes": "HUMAN: requires operator + staging stack",
+      "status": "BLOCKED",
+      "verification_date": "2026-09-13",
+      "verifier": "step12-execution"
+    },
+    {
+      "evidence": "Real retention drill on staging PostgreSQL 17.11: seeded a 400-day-old call+turn and a fresh call+turn under tenant 'retention-drill-tenant', ran purge_expired_calls (the scheduler's exact path) -> purged_calls=1, purged_turns=1, cutoff=2025-09-13; expired rows deleted, fresh rows preserved (boundary verified); test rows cleaned up afterwards. Scheduler retention loop also ran in-loop (voxdesk_job_runs_total{job=retention,outcome=success}=1).",
+      "item_id": "retention-001",
+      "notes": "",
+      "status": "PASS",
+      "verification_date": "2026-09-13",
+      "verifier": "step14-staging-execution"
+    },
+    {
+      "evidence": "COST_UNIT_PRICES defaults to empty -> every unit price is UNKNOWN by design (app/billing/cost.py; docs/STEP10-COST-SOURCES.md). Price source URLs are documented for Twilio/ElevenLabs/OpenAI/Anthropic/Google. No price was fabricated. Budgets/alerts require staging review. tests/test_cost.py -> 14 passed.",
+      "item_id": "cost-001",
+      "notes": "static verification only; operator must populate pricing + budgets",
+      "status": "BLOCKED",
+      "verification_date": "2026-09-13",
+      "verifier": "step12-execution"
+    },
+    {
+      "evidence": "RCLONE_REMOTE is not configured and the rclone binary is absent in the verification environment; off-site backup sync cannot be executed. Not faked.",
+      "item_id": "offsite-001",
+      "notes": "INFRASTRUCTURE: requires rclone + remote backend",
+      "status": "BLOCKED",
+      "verification_date": "2026-09-13",
+      "verifier": "step12-execution"
+    }
+  ],
+  "notes": "Record one entry per checklist item with a status, evidence text, verification date and verifier. An item with no entry is NOT_RUN. PASS without evidence is not possible. P0/P1 items may not be WAIVED; P2/P3 waivers need reason/approver/date/expiry. The gate never fills this file in for you: evidence is what actually happened. Real-provider items (realprov-*) and the manual E2E item (e2e-001) are populated by scripts/release_gate.py from separate result files and should not be duplicated here.",
+  "step": "step12-execution",
+  "title": "VoxDesk launch evidence registry",
+  "verified_on": "2026-09-13"
+}

@@ -220,4 +220,3 @@ def extract(
         document.metadata["text_format"] = inner
     document.metadata["format"] = format_name
     return document
-

@@ -34,8 +34,8 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
-from sqlalchemy import Float, case, cast, func, select
+from pydantic import BaseModel
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import TenantContext, require_permission
@@ -761,4 +761,3 @@ async def usage_analytics(
         ),
         currency=context.plan.currency if context.plan else "usd",
     )
-

@@ -1093,4 +1093,3 @@ def _event_description(request: BookingRequest) -> str:
     if request.reason:
         lines.append(f"Reason: {request.reason}")
     return "\n".join(lines)
-

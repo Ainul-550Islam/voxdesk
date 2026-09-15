@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import structlog
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -442,27 +442,29 @@ async def reap_stuck_documents(
     wrong moment.
     """
     cutoff = datetime.utcnow() - timedelta(seconds=older_than_seconds)
-    stuck = (
-        (
-            await session.execute(
-                select(KnowledgeDocument).where(
-                    KnowledgeDocument.status == DocumentStatus.PROCESSING,
-                    KnowledgeDocument.processing_started_at.isnot(None),
-                    KnowledgeDocument.processing_started_at < cutoff,
-                )
-            )
+    # A single conditional UPDATE rather than load-modify-commit: a stale copy
+    # of the row in the session's identity map would make the mutation a no-op
+    # (the same class of bug the reminder reaper had). The UPDATE writes the
+    # real current row atomically.
+    result = await session.execute(
+        update(KnowledgeDocument)
+        .where(
+            KnowledgeDocument.status == DocumentStatus.PROCESSING,
+            KnowledgeDocument.processing_started_at.isnot(None),
+            KnowledgeDocument.processing_started_at < cutoff,
         )
-        .scalars()
-        .all()
+        .values(
+            status=DocumentStatus.FAILED,
+            error_message="processing timed out and was reset; try reindexing",
+            processing_started_at=None,
+        )
+        .execution_options(synchronize_session=False)
     )
-    for document in stuck:
-        document.status = DocumentStatus.FAILED
-        document.error_message = "processing timed out and was reset; try reindexing"
-        document.processing_started_at = None
-    if stuck:
-        await session.commit()
-        log.warning("ingest.reaped_stuck_documents", count=len(stuck))
-    return len(stuck)
+    await session.commit()
+    count = result.rowcount or 0
+    if count:
+        log.warning("ingest.reaped_stuck_documents", count=count)
+    return count
 
 
 async def pending_documents(
@@ -482,3 +484,31 @@ async def pending_documents(
         .all()
     )
 
+
+async def claim_uploaded_document(
+    session: AsyncSession, document_id, *, now: datetime | None = None
+) -> bool:
+    """
+    Atomically move a UPLOADED document to PROCESSING. True iff this caller won.
+
+    Step 6 (scale-compliance). `pending_documents` + `process_document` used
+    to be a check-then-act: two workers could both select the same UPLOADED
+    document and both run extraction and embedding, paying for the embedding
+    twice. A single conditional UPDATE arbitrates the race, so exactly one
+    worker embeds each version.
+    """
+    now = now or datetime.utcnow()
+    result = await session.execute(
+        update(KnowledgeDocument)
+        .where(
+            KnowledgeDocument.id == document_id,
+            KnowledgeDocument.status == DocumentStatus.UPLOADED,
+        )
+        .values(
+            status=DocumentStatus.PROCESSING,
+            processing_started_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+    return result.rowcount == 1

@@ -217,4 +217,3 @@ async def test_reason_cannot_inject_xml_into_the_twiml(db):
     assert twiml.count("<Dial") == 1, "a second Dial verb was injected"
     assert twiml.count("<Number>") == 1
     assert f"<Number>{HUMAN}</Number>" in twiml
-

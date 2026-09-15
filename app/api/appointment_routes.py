@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import TenantContext, get_owned, record_audit, require_permission
 from app.auth.permissions import Permission
 from app.core.logging import log
+from app.core.ssrf import OutboundUrlError, validate_outbound_url
 from app.db.models import (
     Appointment,
     AppointmentStatus,
@@ -711,6 +712,19 @@ def _validated_config(provider_type: CalendarProviderType, config: dict) -> dict
             detail="Cal.com requires config.event_type_id; every booking is "
                    "made against an event type",
         )
+
+    # SSRF guard (Step 9): `base_url` receives a bearer access token and
+    # `token_url` receives the tenant's client_secret + refresh_token, so both
+    # must be https and must not point at loopback, link-local, RFC 1918, the
+    # cloud metadata endpoint, or special-use hostnames.
+    for field in ("base_url", "token_url"):
+        value = cleaned.get(field)
+        if value is not None:
+            try:
+                validate_outbound_url(str(value), require_https=True)
+            except OutboundUrlError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+
     return cleaned
 
 
@@ -864,4 +878,3 @@ async def update_scheduling_policy(
 
     await session.commit()
     return await get_scheduling_policy(ctx=ctx, session=session)
-

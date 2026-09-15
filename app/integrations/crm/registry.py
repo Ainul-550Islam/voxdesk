@@ -58,4 +58,3 @@ def capabilities_of(provider: CrmProviderType) -> frozenset[Capability]:
 
 def supports(provider: CrmProviderType, capability: Capability) -> bool:
     return capability in capabilities_of(provider)
-

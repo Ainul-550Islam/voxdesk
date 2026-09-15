@@ -377,3 +377,26 @@ describe('security', () => {
     expect(screen.getAllByText(/onerror/).length).toBeGreaterThan(0)
   })
 })
+describe('speech speed control', () => {
+  it('constrains the input to the ElevenLabs-supported range', async () => {
+    await openAgent(makeMe(OWNER_PERMISSIONS))
+
+    const input = await screen.findByLabelText(/speech speed/i)
+    expect(input.min).toBe('0.7')
+    expect(input.max).toBe('1.2')
+    expect(input.step).toBe('0.05')
+    // A number input renders the JS value 1.0 as "1".
+    expect(Number(input.value)).toBe(1.0)
+  })
+
+  it('seeds the input with the configured speed', async () => {
+    await openAgent(makeMe(OWNER_PERMISSIONS), {
+      'GET /api/tenants/': {
+        body: { ...AGENT_CONFIG, speech_speed: 1.1 },
+      },
+    })
+
+    const input = await screen.findByLabelText(/speech speed/i)
+    expect(input.value).toBe('1.1')
+  })
+})

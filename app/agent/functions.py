@@ -49,6 +49,24 @@ SCHEDULING_TOOL_NAMES = frozenset({
     "confirm_appointment",
 })
 
+#: The complete set of names `dispatch` will ever resolve. Anything outside
+#: this set is refused, so a prompt-injected model that emits `__class__`,
+#: `dispatch`, `_scheduling`, `tenant` or any other attribute name cannot
+#: reach arbitrary attributes through the `getattr` fallback. Kept in sync
+#: with the advertised TOOL_SCHEMAS plus the scheduling-only names.
+DISPATCHABLE_TOOLS = frozenset({
+    "check_availability",
+    "book_appointment",
+    "reschedule_appointment",
+    "cancel_appointment",
+    "confirm_appointment",
+    "take_message",
+    "escalate_to_human",
+    "answer_question",
+    "qualify_lead",
+    "mark_do_not_call",
+})
+
 TOOL_SCHEMAS = [
     {
         "type": "function",
@@ -610,6 +628,11 @@ class FunctionHandlers:
 
     # -- dispatch ----------------------------------------------------------
     async def dispatch(self, name: str, args: dict) -> dict:
+        # Allowlist first (STEP 9, item N): the tool name comes from the model
+        # and is never trusted to be a name we advertised. Anything else is
+        # refused before any attribute lookup.
+        if name not in DISPATCHABLE_TOOLS:
+            return {"ok": False, "message": f"Unknown function {name}"}
         if name in SCHEDULING_TOOL_NAMES:
             # Routed to the STEP 6 service, which is the only path that can
             # return BOOKED -- and only after a provider accepted it.
@@ -646,4 +669,3 @@ class FunctionHandlers:
         except Exception as exc:  # never let a tool crash the call
             log.error("function.failed", name=name, error=str(exc))
             return {"ok": False, "message": "That did not work. Offer to take a message."}
-

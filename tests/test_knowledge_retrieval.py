@@ -324,4 +324,3 @@ def test_the_noop_reranker_only_truncates():
         for i in range(5)
     ]
     assert [c.chunk_id for c in NoopReranker().rerank("q", items, 2)] == ["0", "1"]
-

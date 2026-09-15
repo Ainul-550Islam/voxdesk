@@ -35,6 +35,7 @@ import uuid
 
 from app.core.config import settings
 from app.core.logging import log
+from app.core.metrics import record_side_effect
 
 #: Documents currently being processed in this process. Stops a double-click
 #: on "reindex" from running two overlapping jobs for the same document.
@@ -59,7 +60,7 @@ async def run_ingestion(document_id: uuid.UUID, *, reindex: bool = False) -> Non
     try:
         from app.db.models import DocumentStatus, KnowledgeDocument
         from app.db.session import get_sessionmaker
-        from app.knowledge.ingest import process_document
+        from app.knowledge.ingest import claim_uploaded_document, process_document
 
         sessionmaker = get_sessionmaker()
         async with sessionmaker() as session:
@@ -71,7 +72,22 @@ async def run_ingestion(document_id: uuid.UUID, *, reindex: bool = False) -> Non
                 # Archived between enqueue and execution. Honour the archive.
                 log.info("knowledge.job_skipped_archived", document_id=key)
                 return
+
+            # Step 6 (scale-compliance): claim atomically. Two workers that
+            # both saw this document UPLOADED must not both extract and embed
+            # it -- the second embedding pass is a real (paid) external side
+            # effect. The conditional UPDATE lets exactly one worker win.
+            if not await claim_uploaded_document(session, document_id):
+                record_side_effect("knowledge_ingest", "duplicate")
+                log.info("knowledge.job_claimed_by_another", document_id=key)
+                return
+            record_side_effect("knowledge_ingest", "attempt")
+
             await process_document(session, document, bump_version=reindex)
+            if document.status is DocumentStatus.READY:
+                record_side_effect("knowledge_ingest", "success")
+            elif document.status is DocumentStatus.FAILED:
+                record_side_effect("knowledge_ingest", "failure")
     except Exception as exc:
         # The job must never take the worker or the request handler with it.
         log.error(
@@ -133,4 +149,3 @@ async def process_pending(limit: int = 5) -> int:
     for document_id in ids:
         await run_ingestion(document_id)
     return len(ids)
-

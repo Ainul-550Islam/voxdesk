@@ -1,32 +1,74 @@
 # ---- Core ----
-fastapi==0.115.6
+# STEP 10 (release hardening, item F): 0.115.6 -> 0.136.1. FastAPI itself had
+# no advisory, but its supported Starlette range is what gates the Starlette
+# security fixes: 0.115.6 pins starlette<0.42 (starlette 0.41.3 carries seven
+# advisories — multipart DoS, Range-header DoS, BadHost request.url poisoning,
+# StaticFiles UNC-path SSRF/credential theft, HTTP-method dispatch, silent
+# form() limit ignore). Only FastAPI 0.133.1+ drops the starlette upper bound,
+# which is what allows the patched Starlette 1.x line to be installed.
+# 0.136.1 is deliberately chosen over the latest (0.141.x): FastAPI 0.137.0
+# introduced a lazy `_IncludedRouter` route model that stops `app.routes`
+# being flattened at import time, which would silently break the Step 9
+# route-introspection contract tests. 0.136.1 is the newest release that
+# still flattens `app.routes` AND permits starlette 1.x.
+fastapi==0.136.1
+# STEP 10 (item F): starlette 0.41.3 -> 1.6.0. This is inside FastAPI
+# 0.136.1's supported range (starlette>=0.46.0) and closes all seven starlette
+# advisories; pinned explicitly so the resolved graph is reproducible. The
+# full API/middleware/WebSocket/security-header/TrustedHost/CORS/auth suite
+# passes against this pairing.
+starlette==1.6.0
 uvicorn[standard]==0.34.0
-pydantic==2.10.5
+# STEP 10 (item B): 2.10.5 -> 2.10.6. pipecat-ai 0.0.94 base requires
+# pydantic>=2.10.6,<3. Patch bump only; no API change.
+pydantic==2.10.6
 pydantic-settings==2.7.0
-python-dotenv==1.0.1
+# STEP 9 (security audit): 1.0.1 -> 1.2.2 (PYSEC-2026-2270). Same major.
+python-dotenv==1.2.2
 
 # ---- Voice pipeline (the hard part) ----
 # Pipecat handles latency, barge-in and turn-taking for you.
 #
-# The extras list deliberately omits `twilio`: pipecat-ai 0.0.55 does not
-# publish that extra (pip warned "does not provide the extra 'twilio'" and
-# silently ignored it). `pipecat/serializers/twilio.py` ships in the base
-# wheel and imports only stdlib, pydantic and internal pipecat modules, so
+# The extras list deliberately omits `twilio`: pipecat-ai does not publish
+# that extra. `pipecat/serializers/twilio.py` ships in the base wheel and
+# imports only stdlib, pydantic and internal pipecat modules, so
 # TwilioFrameSerializer keeps working. The Twilio REST SDK is pinned
 # separately below.
-pipecat-ai[deepgram,openai,anthropic,google,elevenlabs,silero]==0.0.55
+#
+# STEP 10 (item B): 0.0.55 -> 0.0.94. Every pipecat import path, provider
+# constructor, transport, VAD, serializer, context-aggregator, metrics-frame
+# and function-calling seam used by app/agent/* was verified against the
+# 0.0.94 wheel source before this bump; provider packages moved one level
+# deeper (`pipecat.services.openai.llm` etc.) and the app now imports the
+# canonical paths. See docs/STEP10-*.md for the compatibility matrix.
+pipecat-ai[deepgram,openai,anthropic,google,elevenlabs,silero]==0.0.94
 websockets==13.1
 
 # ---- Telephony ----
 twilio==9.4.1
-python-multipart==0.0.20     # Twilio posts webhooks as form data
+# STEP 9 (security audit): 0.0.20 has CVE-2026-24486 (multipart DoS); 0.0.22 is
+# the first patched release on the same minor line and changes no parsing
+# behaviour the Twilio form webhooks rely on.
+# STEP 9 (security audit): 0.0.20 had CVE-2026-24486; 0.0.31 closes the five
+# further multipart DoS advisories (PYSEC-2026-3036..3040). Same 0.0.x line.
+python-multipart==0.0.31     # Twilio posts webhooks as form data
 
 # ---- Text channels (SMS / WhatsApp share the voice tools) ----
-openai==1.59.6               # also drives Gemini via its OpenAI-compatible endpoint
-anthropic==0.45.2           # floor set by pipecat-ai 0.0.55 (anthropic~=0.45.2)
+# STEP 10 (item B): 1.59.6 -> 1.74.0. pipecat-ai 0.0.94 base requires
+# openai>=1.74.0,<3. No advisory on 1.59.6; this is a compatibility bump.
+# `AsyncOpenAI` (app/agent/text_agent.py) is unchanged across 1.x.
+openai==1.74.0
+# STEP 10 (item B): 0.45.2 -> 0.49.0. pipecat-ai 0.0.94's `anthropic` extra
+# requires anthropic~=0.49.0. No advisory on 0.45.2; compatibility bump.
+anthropic==0.49.0
+# STEP 10 (item B): explicit pin. app/agent/stt.py now imports `LiveOptions`
+# from the `deepgram` SDK directly (pipecat 0.0.94 no longer re-exports it);
+# pipecat 0.0.94's `deepgram` extra requires deepgram-sdk~=4.7.0.
+deepgram-sdk==4.7.0
 
 # ---- Scheduler (outbound campaigns + reminders) ----
-apscheduler==3.11.0
+# The scheduler is a set of asyncio loops in scripts/scheduler.py; no
+# third-party scheduler is used.
 
 # ---- Database ----
 sqlalchemy[asyncio]==2.0.36
@@ -37,17 +79,28 @@ alembic==1.14.0
 google-api-python-client==2.157.0
 google-auth-oauthlib==1.2.1
 #
-# Held at 0.27.2 by pipecat-ai 0.0.55 (`httpx~=0.27.2`, i.e. >=0.27.2,<0.28).
-# Every other consumer here accepts it: openai and anthropic both ask for
-# >=0.23,<1, and twilio / google-api-python-client impose no constraint.
-# The codebase already uses the 0.28-compatible `ASGITransport(app=...)`
-# form, so nothing had to change to move back one minor version.
-httpx==0.27.2
+# STEP 10 (item B): 0.27.2 -> 0.28.1. pipecat-ai 0.0.94 dropped its
+# `httpx~=0.27.2` pin, but its `google` extra pulls google-genai>=1.41.0 which
+# requires httpx>=0.28.1,<1. The codebase already uses the 0.28-compatible
+# `ASGITransport(app=...)` form and only calls `httpx.AsyncClient(timeout=...)`
+# in the billing/calendar/CRM providers, so nothing else had to change.
+httpx==0.28.1
 
 # STEP 5: application-level encryption of CRM credentials at rest (AES-256-GCM).
 # There is no stdlib AEAD, and hand-rolling one is not an option, so this is a
 # hard dependency: `app/core/config.py` refuses to boot in production without it.
-cryptography==44.0.0
+# STEP 9 (security audit): 44.0.0 has CVE-2024-12797 (OpenSSL RSA PKCS#1 v1.5
+# padding oracle); 44.0.1 is the patch-only fix on the same line.
+# STEP 10 (item G): 44.0.1 -> 50.0.1. OSV reports seven advisories on 44.0.1:
+# OpenSSL-in-wheel (48.0.1), subgroup attack (46.0.5), DNS-name-constraint
+# enforcement (46.0.6), wildcard-DNS verifier escape (49.0.0), duplicate
+# self-signed intermediates (49.0.0), PKCS#7 Bleichenbacher (50.0.0). The app
+# uses only `cryptography.hazmat.primitives.ciphers.aead.AESGCM` (app/
+# integrations/crm/crypto.py), which is unchanged across 44->50, and the
+# ciphertext envelope (v1.<key_id>.<nonce>.<ct>) is app-defined, so no stored
+# credential format changes and no migration is required. Encryption/rotation/
+# cross-tenant-AAD tests are re-run as part of the upgrade gate.
+cryptography==50.0.1
 
 # ---- Knowledge base / RAG document extraction (STEP 4) ----
 # `app/knowledge/extractors/pdf.py` imports `pypdf` lazily and degrades to an
@@ -55,7 +108,17 @@ cryptography==44.0.0
 # only surfaced as six failing PDF tests on a clean install. Pure Python and
 # does not shell out, which is the point: a PDF is an untrusted file and
 # handing it to a native converter is a far larger attack surface.
-pypdf==5.1.0
+# STEP 9 (security audit): 5.1.0 -> 6.16.1. Major bump, deliberate and tested:
+# PDF is an untrusted-upload parser with 41 advisories fixed between 6.0.0 and
+# 6.13.0; the extractor only uses the stable PdfReader/pages/extract_text API,
+# verified by the full backend suite (including the PDF extraction tests).
+pypdf==6.16.1
+
+# `app/knowledge/storage/s3.py` imports `boto3` lazily and only when the S3
+# storage backend is selected, so the omission is invisible at boot -- but S3
+# is an advertised storage backend (`KNOWLEDGE_STORAGE_BACKEND=s3`), so a
+# clean install with that setting would fail on the first document write.
+boto3==1.35.90
 
 # `app/knowledge/extractors/docx.py` imports `docx` lazily and degrades to an
 # ExtractionError("DOCX support is not installed"), so like pypdf the omission
@@ -68,7 +131,22 @@ python-docx==1.2.0
 
 # ---- Ops ----
 structlog==24.4.0
+# PyYAML is read directly (yaml.safe_load) by the deploy tooling
+# (scripts/staging_certify.py) and the deploy/observability config tests
+# (tests/test_deployment.py, tests/test_observability_configs.py). It used to
+# arrive only transitively (via google-auth-oauthlib), which meant a lean
+# install could silently lose it and break those files. Pinned explicitly so
+# the import can never disappear. 6.0.3 is the current 6.0.x line; only
+# yaml.safe_load is used, never the unsafe yaml.load.
+PyYAML==6.0.3
 sentry-sdk==2.19.2
+# STEP 10 (item B): 25.1.0 -> 24.1.0. pipecat-ai 0.0.94 base requires
+# aiofiles<25,>=24.1.0. VoxDesk does not import aiofiles directly; it is used
+# only through FastAPI's StaticFiles (dashboard serving), whose API is
+# unchanged across aiofiles 24/25.
+aiofiles==24.1.0            # FastAPI StaticFiles serving the built dashboard
+prometheus-client==0.21.0   # /metrics for Prometheus scraping
+redis==5.2.1                # cache + rate-limit backend (optional at runtime)
 
 # ---- Dev ----
 pytest==8.3.4
@@ -78,6 +156,9 @@ ruff==0.8.4
 
 # --- auth (STEP 2) ---
 bcrypt==4.2.1              # password hashing; used directly, not via passlib
-PyJWT==2.10.1              # access tokens (HS256, pinned on decode)
+# STEP 9 (security audit): 2.10.1 carries GHSA-752w-5fwx-jx9f (algorithm
+# confusion) and several signature/DoS advisories fixed in 2.12.x/2.13.0.
+# Bumped within the same major; encode/decode are called with an explicit
+# algorithm and issuer/audience, which is unchanged in 2.13.0.
+PyJWT==2.13.0              # access tokens (HS256, pinned on decode)
 email-validator==2.2.0     # EmailStr validation for pydantic
-

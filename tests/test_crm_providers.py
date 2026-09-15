@@ -763,4 +763,3 @@ class TestWebhookDelivery:
         with pytest.raises(CrmTimeout) as caught:
             await webhook().deliver("lead.created", {}, idempotency_key="k")
         assert caught.value.retryable is True
-

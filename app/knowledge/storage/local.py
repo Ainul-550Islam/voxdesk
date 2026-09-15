@@ -71,4 +71,3 @@ class LocalStorage:
 
     async def exists(self, key: str) -> bool:
         return await asyncio.to_thread(self._resolve(key).is_file)
-

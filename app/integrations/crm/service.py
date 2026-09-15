@@ -40,6 +40,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import log
+from app.core.metrics import record_side_effect
 from app.db.models import (
     CrmContactLink,
     CrmEntityType,
@@ -252,10 +253,39 @@ async def process_sync(session: AsyncSession, sync: CrmSync) -> SyncOutcome:
             message="the event for this sync no longer exists", started=started,
         )
 
+    # Step 6 (scale-compliance): claim the row atomically. Two workers that
+    # both selected this sync from an overlapping pass must not both deliver;
+    # a single conditional UPDATE lets exactly one win. All the pre-checks
+    # above (integration, rate limit, event) already ran, so a lost claim here
+    # simply means another worker owns the row.
+    now = datetime.utcnow()
+    claimed = await session.execute(
+        update(CrmSync)
+        .where(
+            CrmSync.id == sync.id,
+            CrmSync.status.in_(list(RETRYABLE_SYNC_STATUSES)),
+        )
+        .values(
+            status=CrmSyncStatus.PROCESSING,
+            attempt_count=CrmSync.attempt_count + 1,
+            last_attempt_at=now,
+        )
+        # Do not let SQLAlchemy "evaluate" the increment back onto the ORM
+        # object: the mirror below applies it exactly once.
+        .execution_options(synchronize_session=False)
+    )
+    await session.commit()
+    if claimed.rowcount != 1:
+        record_side_effect("crm_sync", "duplicate")
+        return SyncOutcome(
+            sync_id=sync.id, status=sync.status,
+            skipped_reason="claimed_by_another", duration_ms=_ms(started),
+        )
+
     sync.status = CrmSyncStatus.PROCESSING
     sync.attempt_count += 1
-    sync.last_attempt_at = datetime.utcnow()
-    await session.commit()
+    sync.last_attempt_at = now
+    record_side_effect("crm_sync", "attempt")
 
     attempt = sync.attempt_count
     try:
@@ -542,6 +572,7 @@ async def _mark_synced(
     sync.last_error = None
     sync.last_error_code = None
     await session.commit()
+    record_side_effect("crm_sync", "success")
 
     duration = _ms(started)
     log.info(
@@ -570,6 +601,7 @@ async def _handle_error(
         sync.last_error = message
         sync.last_error_code = error.code
         await session.commit()
+        record_side_effect("crm_sync", "retry")
 
         duration = _ms(started)
         log.warning(
@@ -598,6 +630,7 @@ async def _mark_permanent(
     sync.last_error = safe_message(message)
     sync.last_error_code = code
     await session.commit()
+    record_side_effect("crm_sync", "failure")
 
     duration = _ms(started)
     log.warning(
@@ -766,4 +799,3 @@ def _parse_dt(value: Any) -> datetime:
         except ValueError:
             pass
     return datetime.utcnow()
-

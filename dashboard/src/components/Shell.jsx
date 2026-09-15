@@ -170,4 +170,3 @@ export default function Shell({ me, can, path, title, onSignOut, children }) {
     </div>
   )
 }
-

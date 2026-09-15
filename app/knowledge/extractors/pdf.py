@@ -88,4 +88,3 @@ class PdfExtractor:
                 "truncated": len(reader.pages) > MAX_PAGES,
             },
         )
-

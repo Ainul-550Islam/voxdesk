@@ -24,8 +24,8 @@ def get_engine() -> AsyncEngine:
     return create_async_engine(
         settings.database_url,
         pool_pre_ping=True,     # drop dead connections instead of erroring mid-call
-        pool_size=10,
-        max_overflow=20,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
         echo=False,
     )
 
@@ -50,4 +50,3 @@ def __getattr__(name: str):
     if name == "SessionLocal":
         return get_sessionmaker()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-

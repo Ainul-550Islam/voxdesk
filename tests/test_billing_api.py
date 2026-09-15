@@ -852,4 +852,3 @@ class TestReconciliation:
         blob = json.dumps(report.as_dict())
         assert "tenant_id" in blob
         assert "sk_" not in blob
-

@@ -98,4 +98,3 @@ def test_interpolate_fills_escalation_number():
 
 def test_interpolate_leaves_unknown_placeholder_alone():
     assert "{mystery}" in interpolate("a {mystery} b", FakeTenant())
-

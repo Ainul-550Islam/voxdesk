@@ -96,4 +96,3 @@ def estimate_tokens(text: str) -> int:
 class Extractor(Protocol):
     def extract(self, data: bytes, *, filename: str | None = None) -> ExtractedDocument:
         ...
-

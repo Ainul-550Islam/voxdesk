@@ -33,12 +33,13 @@ audit_action = sa.Enum(
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
     uuid_t = postgresql.UUID(as_uuid=True)
 
-    user_role.create(bind, checkfirst=True)
-    audit_action.create(bind, checkfirst=True)
-
+    # NOTE: no explicit `user_role.create(checkfirst=True)` here. The enum
+    # objects are created by `op.create_table` below (SQLAlchemy emits
+    # `CREATE TYPE` for enum columns); creating them first and then again via
+    # the table DDL emits the type twice, which fails on a fresh database
+    # with "type ... already exists".
     op.create_table(
         "users",
         sa.Column("id", uuid_t, primary_key=True),
@@ -129,4 +130,3 @@ def downgrade() -> None:
 
     audit_action.drop(bind, checkfirst=True)
     user_role.drop(bind, checkfirst=True)
-

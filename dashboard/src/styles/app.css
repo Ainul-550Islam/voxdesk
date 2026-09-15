@@ -416,4 +416,3 @@ mark { background: #fef08a; padding: 0 1px; }
 .muted { color: var(--text-muted); }
 .stack { display: flex; flex-direction: column; gap: 12px; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-

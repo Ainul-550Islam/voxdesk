@@ -134,4 +134,3 @@ export default function Transcript({ turns, agentName, timezone, onCopy }) {
     </div>
   )
 }
-

@@ -88,4 +88,3 @@ def test_sms_rules_forbid_markdown_and_cap_length():
 def test_whatsapp_rules_allow_bold_but_not_tables():
     rules = channel_rules("whatsapp", "Acme")
     assert "*bold*" in rules and "No headers, no tables" in rules
-

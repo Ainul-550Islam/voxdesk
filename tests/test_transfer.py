@@ -452,4 +452,3 @@ async def test_destination_always_comes_from_the_tenant_row(db, provider):
     await db.refresh(call_a)
     assert call_a.transfer_destination == "+15551110000"
     assert "+15552220000" not in provider.last_twiml()
-

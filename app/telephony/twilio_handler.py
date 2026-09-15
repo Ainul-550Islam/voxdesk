@@ -7,14 +7,19 @@ Flow:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 
-from fastapi import APIRouter, Depends, Form, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from twilio.twiml.voice_response import Connect, VoiceResponse
 
+from app.agent.errors import ProviderError
+from app.agent.provider_observability import record_provider_error
+from app.core import metrics
 from app.core.config import settings
 from app.core.logging import log
 from app.db.models import (
@@ -29,7 +34,7 @@ from app.db.session import get_session, get_sessionmaker
 from app.integrations import crm
 from app.billing import hooks as billing_hooks
 from app.integrations.crm import hooks as crm_hooks
-from app.telephony import call_state, phone, transfer_service
+from app.telephony import call_state, e2e_guard, phone, transfer_service
 from app.telephony.ivr import DEFAULT_FLOW, next_node, render_node
 from app.telephony.stream_auth import (
     create_stream_token,
@@ -59,6 +64,32 @@ async def incoming_call(
         await session.execute(select(Tenant).where(Tenant.twilio_number == To))
     ).scalar_one_or_none()
 
+    # Step 5 (scale-compliance): the real-call E2E guard. A no-op unless the
+    # operator armed E2E mode; when armed, only an explicit, allowlisted,
+    # test-tenant call may pass. Rejections happen before any Call row exists,
+    # so a refused caller can never create a session, stream, usage event, or
+    # audit record. See app/telephony/e2e_guard.py.
+    try:
+        e2e_ctx = e2e_guard.check_inbound(
+            settings, from_number=From, to_number=To, tenant=tenant
+        )
+    except e2e_guard.E2ERejected as exc:
+        log.warning(
+            "call.e2e_rejected_hangup",
+            reason=str(exc),
+            from_=phone.redact(From),
+            to=phone.redact(To),
+        )
+        rejected = VoiceResponse()
+        rejected.say(
+            "This number is in test mode and this caller is not authorized. Goodbye."
+        )
+        rejected.hangup()
+        return PlainTextResponse(str(rejected), media_type="application/xml")
+    except e2e_guard.E2EConfigurationError:
+        # Fail-closed: refuse traffic rather than answer without the guard.
+        raise HTTPException(status_code=503, detail="E2E configuration error")
+
     response = VoiceResponse()
 
     if tenant is None or not tenant.is_active:
@@ -83,15 +114,34 @@ async def incoming_call(
     # `tenant.is_active`, checked above, remains the deliberate off switch for
     # an account that genuinely must stop.
 
-    call = Call(
-        tenant_id=tenant.id,
-        call_sid=CallSid,
-        from_number=From,
-        to_number=To,
-        status=CallStatus.IN_PROGRESS,
-    )
-    session.add(call)
-    await session.commit()
+    # Idempotent call creation: Twilio may re-deliver /voice for the same
+    # CallSid (network retry). The unique index on call_sid already prevents a
+    # duplicate row, but the naive insert turned that into a 500 and another
+    # retry. Answering an already-known CallSid with fresh TwiML is correct and
+    # creates no second call/session/billing/usage/audit record.
+    call = (
+        await session.execute(select(Call).where(Call.call_sid == CallSid))
+    ).scalar_one_or_none()
+    if call is None:
+        call = Call(
+            tenant_id=tenant.id,
+            call_sid=CallSid,
+            from_number=From,
+            to_number=To,
+            status=CallStatus.IN_PROGRESS,
+        )
+        session.add(call)
+        try:
+            await session.commit()
+        except IntegrityError:
+            # Lost a race with a concurrent duplicate; roll back and reuse the
+            # row the other request created.
+            await session.rollback()
+            call = (
+                await session.execute(select(Call).where(Call.call_sid == CallSid))
+            ).scalar_one_or_none()
+    else:
+        log.info("call.incoming_duplicate", call_sid=CallSid, tenant=tenant.name)
 
     # Short-lived signed token so the media WebSocket is not open to anyone
     # who learns a call SID. See app/telephony/stream_auth.py.
@@ -104,7 +154,9 @@ async def incoming_call(
     if tenant.ivr_enabled:
         flow = tenant.ivr_flow or DEFAULT_FLOW
         start = flow.get("start", "start")
-        log.info("call.incoming.ivr", tenant=tenant.name, node=start)
+        log.info(
+            "call.incoming.ivr", tenant=tenant.name, node=start, e2e_test=bool(e2e_ctx)
+        )
         return PlainTextResponse(
             render_node(flow, start, tenant, ws_url=ws_url),
             media_type="application/xml",
@@ -113,8 +165,14 @@ async def incoming_call(
     connect = Connect()
     connect.stream(url=ws_url)
     response.append(connect)
-    log.info("call.incoming", from_=phone.redact(From), to=phone.redact(To),
-             tenant=tenant.name, call_sid=CallSid)
+    log.info(
+        "call.incoming",
+        from_=phone.redact(From),
+        to=phone.redact(To),
+        tenant=tenant.name,
+        call_sid=CallSid,
+        e2e_test=bool(e2e_ctx),
+    )
     return PlainTextResponse(str(response), media_type="application/xml")
 
 
@@ -204,11 +262,26 @@ async def media_stream(websocket: WebSocket):
     token = websocket.query_params.get("token")
     await websocket.accept()
 
-    # Twilio sends "connected" then "start" before any audio.
-    try:
+    # Twilio sends "connected" then "start" before any audio. Bound this with
+    # a timeout: a socket that connects and never speaks must not hold a
+    # database session and a pipeline slot open forever. The bound is a
+    # handshake bound only (generous by default and disable-able via
+    # STREAM_HANDSHAKE_TIMEOUT_SECONDS=0) -- it never touches the live
+    # conversation, which runs off the WebSocket, not a wall clock.
+    async def _await_start():
         await websocket.receive_text()                       # connected
-        start_msg = json.loads(await websocket.receive_text())  # start
-    except WebSocketDisconnect:
+        return json.loads(await websocket.receive_text())    # start
+
+    try:
+        timeout = settings.stream_handshake_timeout_seconds
+        start_msg = await (
+            asyncio.wait_for(_await_start(), timeout)
+            if timeout and timeout > 0
+            else _await_start()
+        )
+    except (WebSocketDisconnect, asyncio.TimeoutError):
+        log.warning("ws.handshake_incomplete")
+        await websocket.close(code=1008)     # policy violation
         return
 
     start = start_msg.get("start", {})
@@ -236,6 +309,11 @@ async def media_stream(websocket: WebSocket):
             return
         tenant = await session.get(Tenant, call.tenant_id)
 
+        # Step 7 observability: the gauge counts live media-stream pipelines,
+        # which is what "calls in flight" means to an operator watching the
+        # dashboard. Bounded (a bare gauge), and cleared in `finally` even if
+        # the pipeline crashes.
+        metrics.ACTIVE_CALLS.inc()
         try:
             await run_voice_agent(
                 websocket=websocket,
@@ -246,7 +324,20 @@ async def media_stream(websocket: WebSocket):
                 call=call,
             )
         except Exception as exc:
-            log.error("call.crashed", call_sid=call_sid, error=str(exc))
+            if isinstance(exc, ProviderError):
+                # A typed provider failure: record the category and
+                # retryability so dashboards/alerts can group them, and log
+                # only the safe, fixed message (never a payload or secret).
+                # The counter labels are normalised to a closed set, so this
+                # cannot mint unbounded Prometheus series.
+                record_provider_error(exc.provider, exc.category)
+                log.error("call.crashed", call_sid=call_sid,
+                          tenant_id=str(call.tenant_id),
+                          provider=exc.provider, category=exc.category,
+                          retryable=exc.retryable, error=exc.safe_message)
+            else:
+                log.error("call.crashed", call_sid=call_sid,
+                          tenant_id=str(call.tenant_id), error=str(exc))
             # A transfer tears our stream down on purpose -- Twilio replaces
             # the TwiML and the socket dies. That is a successful handoff, not
             # a crashed call, so it must not be recorded as FAILED. Going
@@ -261,6 +352,8 @@ async def media_stream(websocket: WebSocket):
             else:
                 log.info("call.stream_closed_for_transfer", call_sid=call_sid,
                          transfer_state=call.transfer_state.value)
+        finally:
+            metrics.ACTIVE_CALLS.dec()
 
 
 @router.post("/status", response_class=PlainTextResponse)
@@ -453,4 +546,3 @@ async def _push_to_crm(tenant: Tenant, call: Call) -> None:
         api_key=tenant.crm_api_key,
     )
     log.info("crm.sync", call=str(call.id), ok=ok)
-

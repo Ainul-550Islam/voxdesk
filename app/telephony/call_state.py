@@ -33,6 +33,7 @@ from datetime import datetime
 
 import structlog
 
+from app.core import observability
 from app.db.models import Call, CallStatus
 
 log = structlog.get_logger()
@@ -191,6 +192,15 @@ def apply_status(
     call.status = target
     _stamp(call, duration_seconds, ended_at, target)
 
+    # Step 7 observability: count the call-shaped signals once, at the exact
+    # transition that produced them. Bounded labels only — the call id/SID
+    # stay in the log line below, never in a Prometheus label.
+    if target is CallStatus.IN_PROGRESS and previous is CallStatus.RINGING:
+        observability.record_call_answered()
+    if is_terminal(target):
+        observability.record_call_outcome(target.value)
+        observability.observe_call_duration(call.duration_seconds)
+
     if reason and target in (CallStatus.FAILED, CallStatus.NO_ANSWER):
         # Only record a failure reason where one is meaningful. `summary` is
         # the caller-visible outcome field and is left alone.
@@ -255,4 +265,3 @@ def apply_provider_status(
         duration_seconds=duration_seconds,
         source=source,
     )
-

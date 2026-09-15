@@ -170,4 +170,3 @@ export function useMediaQuery(queryString) {
   }, [queryString])
   return matches
 }
-

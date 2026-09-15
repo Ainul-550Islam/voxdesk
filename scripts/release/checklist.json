@@ -1,0 +1,367 @@
+{
+  "title": "VoxDesk production launch checklist",
+  "version": "1",
+  "notes": "Single source of truth for launch requirements. Evidence is recorded in scripts/release/evidence.json; no evidence means NOT_RUN, never PASS. P0/P1 items may not be waived. Real-provider items (realprov-*) and the manual E2E item (e2e-001) are populated by scripts/release_gate.py from real result files, never from the evidence file.",
+  "items": [
+    {
+      "id": "code-001",
+      "category": "CODE",
+      "requirement": "Code compiles and all modules import cleanly",
+      "severity": "P0",
+      "classification": "AUTOMATED",
+      "evidence_hint": "compileall + import-check over the app package (Step 10 quality gate)"
+    },
+    {
+      "id": "code-002",
+      "category": "CODE",
+      "requirement": "Static analysis (ruff) passes the CI-fatal ruleset",
+      "severity": "P1",
+      "classification": "AUTOMATED",
+      "evidence_hint": "ruff check with the pyproject CI select set"
+    },
+    {
+      "id": "tests-001",
+      "category": "TESTS",
+      "requirement": "Backend unit + integration test suite passes deterministically",
+      "severity": "P0",
+      "classification": "AUTOMATED",
+      "evidence_hint": "pytest tests/ (no real credentials; SQLite + bcrypt work factor 4)"
+    },
+    {
+      "id": "tests-002",
+      "category": "TESTS",
+      "requirement": "Frontend unit tests pass and production build succeeds",
+      "severity": "P1",
+      "classification": "AUTOMATED",
+      "evidence_hint": "npm test + npm run build with production dependency audit"
+    },
+    {
+      "id": "tests-003",
+      "category": "TESTS",
+      "requirement": "Release-gate logic tests pass",
+      "severity": "P1",
+      "classification": "AUTOMATED",
+      "evidence_hint": "pytest tests/test_release_gate.py"
+    },
+    {
+      "id": "security-001",
+      "category": "SECURITY",
+      "requirement": "Security regression suite and SAST pass",
+      "severity": "P0",
+      "classification": "AUTOMATED",
+      "evidence_hint": "pytest tests/test_security_regression.py + bandit"
+    },
+    {
+      "id": "security-002",
+      "category": "SECURITY",
+      "requirement": "Dependency vulnerability scan clean (no high/critical advisories)",
+      "severity": "P1",
+      "classification": "AUTOMATED",
+      "evidence_hint": "pip-audit + npm audit --audit-level=high (accepted residuals documented)"
+    },
+    {
+      "id": "auth-001",
+      "category": "AUTH",
+      "requirement": "Authentication and RBAC behavior verified by tests",
+      "severity": "P0",
+      "classification": "AUTOMATED",
+      "evidence_hint": "pytest tests/test_auth*.py tests/test_rbac*.py"
+    },
+    {
+      "id": "tenant-001",
+      "category": "TENANT ISOLATION",
+      "requirement": "Tenant isolation invariants verified by tests",
+      "severity": "P0",
+      "classification": "AUTOMATED",
+      "evidence_hint": "pytest tests/test_tenant_isolation.py"
+    },
+    {
+      "id": "deps-001",
+      "category": "DEPENDENCIES",
+      "requirement": "Backend dependencies pinned and audit script passes",
+      "severity": "P1",
+      "classification": "AUTOMATED",
+      "evidence_hint": "scripts/audit_dependencies.sh (accepted residuals: nltk, pillow, pytest)"
+    },
+    {
+      "id": "db-001",
+      "category": "DATABASE",
+      "requirement": "Database schema and constraints exercised by tests",
+      "severity": "P0",
+      "classification": "AUTOMATED",
+      "evidence_hint": "pytest tests/ (SQLite in-memory) covering models + constraints"
+    },
+    {
+      "id": "migrations-001",
+      "category": "MIGRATIONS",
+      "requirement": "Migration chain is linear and has a single recorded head",
+      "severity": "P0",
+      "classification": "AUTOMATED",
+      "evidence_hint": "alembic heads + revision graph check (0011_side_effect_exactly_once)"
+    },
+    {
+      "id": "deploy-001",
+      "category": "DEPLOYMENT",
+      "requirement": "Deployment script and config validated (static) against the candidate artifact",
+      "severity": "P1",
+      "classification": "INFRASTRUCTURE",
+      "evidence_hint": "scripts/deploy.sh + docker compose config + deployment tests"
+    },
+    {
+      "id": "backup-001",
+      "category": "BACKUP",
+      "requirement": "Backup procedure is configured and verified",
+      "severity": "P1",
+      "classification": "INFRASTRUCTURE",
+      "evidence_hint": "docs/STEP10-BACKUP-SYNC.md runbook executed in staging; pg_dump/rclone evidence"
+    },
+    {
+      "id": "restore-001",
+      "category": "RESTORE",
+      "requirement": "Restore drill completed and verified in staging",
+      "severity": "P1",
+      "classification": "INFRASTRUCTURE",
+      "evidence_hint": "restore from latest backup, row-count + checksum verification"
+    },
+    {
+      "id": "offsite-001",
+      "category": "OFF-SITE BACKUP",
+      "requirement": "Off-site backup replication verified",
+      "severity": "P2",
+      "classification": "INFRASTRUCTURE",
+      "evidence_hint": "rclone sync + ls of off-site bucket (docs/STEP10-BACKUP-SYNC.md)"
+    },
+    {
+      "id": "tls-001",
+      "category": "TLS",
+      "requirement": "TLS termination configured and certificates valid on all public endpoints",
+      "severity": "P0",
+      "classification": "INFRASTRUCTURE",
+      "evidence_hint": "curl -v https endpoint + cert expiry check in staging"
+    },
+    {
+      "id": "obs-001",
+      "category": "OBSERVABILITY",
+      "requirement": "Metrics, structured logs, and tracing exported and verified",
+      "severity": "P1",
+      "classification": "INFRASTRUCTURE",
+      "evidence_hint": "prometheus /metrics scrape + log correlation + trace export in staging"
+    },
+    {
+      "id": "alert-001",
+      "category": "ALERTING",
+      "requirement": "Alerts are defined, routed, and tested (fired once)",
+      "severity": "P1",
+      "classification": "INFRASTRUCTURE",
+      "evidence_hint": "observability/alerts.yml + SLO-ALERTS.md runbooks + test fire in staging"
+    },
+    {
+      "id": "realprov-twilio",
+      "category": "VOICE PROVIDERS",
+      "requirement": "Twilio connectivity verified (read-only)",
+      "severity": "P1",
+      "classification": "EXTERNAL",
+      "evidence_hint": "scripts/validate_providers.py (opt-in, read-only)"
+    },
+    {
+      "id": "realprov-deepgram",
+      "category": "VOICE PROVIDERS",
+      "requirement": "Deepgram connectivity verified (read-only)",
+      "severity": "P1",
+      "classification": "EXTERNAL",
+      "evidence_hint": "scripts/validate_providers.py (opt-in, read-only)"
+    },
+    {
+      "id": "realprov-elevenlabs",
+      "category": "VOICE PROVIDERS",
+      "requirement": "ElevenLabs connectivity verified (read-only)",
+      "severity": "P1",
+      "classification": "EXTERNAL",
+      "evidence_hint": "scripts/validate_providers.py (opt-in, read-only)"
+    },
+    {
+      "id": "realprov-openai",
+      "category": "VOICE PROVIDERS",
+      "requirement": "OpenAI LLM connectivity verified (read-only)",
+      "severity": "P1",
+      "classification": "EXTERNAL",
+      "evidence_hint": "scripts/validate_providers.py (opt-in, read-only)"
+    },
+    {
+      "id": "realprov-anthropic",
+      "category": "VOICE PROVIDERS",
+      "requirement": "Anthropic LLM connectivity verified (read-only)",
+      "severity": "P1",
+      "classification": "EXTERNAL",
+      "evidence_hint": "scripts/validate_providers.py (opt-in, read-only)"
+    },
+    {
+      "id": "realprov-google",
+      "category": "VOICE PROVIDERS",
+      "requirement": "Google LLM connectivity verified (read-only)",
+      "severity": "P1",
+      "classification": "EXTERNAL",
+      "evidence_hint": "scripts/validate_providers.py (opt-in, read-only)"
+    },
+    {
+      "id": "realprov-google-calendar",
+      "category": "CALENDAR",
+      "requirement": "Google Calendar connectivity verified (read-only)",
+      "severity": "P1",
+      "classification": "EXTERNAL",
+      "evidence_hint": "scripts/validate_providers.py (opt-in, read-only)"
+    },
+    {
+      "id": "realprov-microsoft",
+      "category": "CALENDAR",
+      "requirement": "Microsoft Calendar connectivity verified (read-only)",
+      "severity": "P1",
+      "classification": "EXTERNAL",
+      "evidence_hint": "scripts/validate_providers.py (opt-in, read-only)"
+    },
+    {
+      "id": "realprov-calcom",
+      "category": "CALENDAR",
+      "requirement": "Cal.com connectivity verified (read-only)",
+      "severity": "P2",
+      "classification": "EXTERNAL",
+      "evidence_hint": "scripts/validate_providers.py (opt-in, read-only)"
+    },
+    {
+      "id": "realprov-hubspot",
+      "category": "CRM",
+      "requirement": "HubSpot connectivity verified (read-only)",
+      "severity": "P1",
+      "classification": "EXTERNAL",
+      "evidence_hint": "scripts/validate_providers.py (opt-in, read-only)"
+    },
+    {
+      "id": "realprov-ghl",
+      "category": "CRM",
+      "requirement": "GoHighLevel connectivity verified (read-only)",
+      "severity": "P2",
+      "classification": "EXTERNAL",
+      "evidence_hint": "scripts/validate_providers.py (opt-in, read-only)"
+    },
+    {
+      "id": "realprov-jobber",
+      "category": "CRM",
+      "requirement": "Jobber connectivity verified (read-only)",
+      "severity": "P2",
+      "classification": "EXTERNAL",
+      "evidence_hint": "scripts/validate_providers.py (opt-in, read-only)"
+    },
+    {
+      "id": "realprov-stripe",
+      "category": "BILLING",
+      "requirement": "Stripe connectivity verified (read-only, no charges)",
+      "severity": "P0",
+      "classification": "EXTERNAL",
+      "evidence_hint": "scripts/validate_providers.py (opt-in, read-only)"
+    },
+    {
+      "id": "realprov-health-001",
+      "category": "REAL PROVIDER HEALTH",
+      "requirement": "Full read-only health sweep of all 13 providers completed green",
+      "severity": "P1",
+      "classification": "EXTERNAL",
+      "evidence_hint": "aggregate of scripts/validate_providers.py results for all 13 providers (opt-in, read-only)"
+    },
+    {
+      "id": "e2e-001",
+      "category": "REAL TELEPHONY E2E",
+      "requirement": "Human-controlled live voice call completed with pre-call/call/post-call evidence",
+      "severity": "P0",
+      "classification": "HUMAN",
+      "evidence_hint": "docs/REAL-E2E-RESULT-RECORD.md (operator-triggered call, never automated)"
+    },
+    {
+      "id": "billing-001",
+      "category": "BILLING",
+      "requirement": "Billing/metering/idempotency verified by tests",
+      "severity": "P0",
+      "classification": "AUTOMATED",
+      "evidence_hint": "pytest tests/test_billing_*.py tests/test_side_effect_exactly_once.py"
+    },
+    {
+      "id": "cost-001",
+      "category": "COST MODEL",
+      "requirement": "Cost model, budgets, and alerts configured and reviewed",
+      "severity": "P2",
+      "classification": "INFRASTRUCTURE",
+      "evidence_hint": "docs/STEP10-COST-SOURCES.md + provider budget alerts configured"
+    },
+    {
+      "id": "ratelimit-001",
+      "category": "RATE LIMITING",
+      "requirement": "Rate limiting verified by tests and configured in production",
+      "severity": "P1",
+      "classification": "AUTOMATED",
+      "evidence_hint": "pytest tests/test_rate_limit*.py + gateway config"
+    },
+    {
+      "id": "abuse-001",
+      "category": "ABUSE PREVENTION",
+      "requirement": "Abuse prevention controls (SSRF, E2E guard) verified by tests",
+      "severity": "P0",
+      "classification": "AUTOMATED",
+      "evidence_hint": "pytest tests/test_ssrf.py tests/test_e2e_guard.py"
+    },
+    {
+      "id": "egress-001",
+      "category": "ABUSE PREVENTION",
+      "requirement": "Outbound egress network policy enforced (allowlist) and verified in staging",
+      "severity": "P1",
+      "classification": "INFRASTRUCTURE",
+      "evidence_hint": "docs/STEP10-EGRESS-POLICY.md applied; egress allowlist tested from staging (denied-by-default)"
+    },
+    {
+      "id": "privacy-001",
+      "category": "PRIVACY",
+      "requirement": "Privacy/GDPR/retention behavior verified by tests",
+      "severity": "P1",
+      "classification": "AUTOMATED",
+      "evidence_hint": "pytest tests/test_gdpr_routes.py tests/test_retention.py"
+    },
+    {
+      "id": "retention-001",
+      "category": "RETENTION",
+      "requirement": "Retention policy applied to recordings/transcripts and verified",
+      "severity": "P2",
+      "classification": "INFRASTRUCTURE",
+      "evidence_hint": "retention job run in staging + deletion verification"
+    },
+    {
+      "id": "compliance-001",
+      "category": "COMPLIANCE DOCUMENTATION",
+      "requirement": "Compliance documentation reviewed and signed off",
+      "severity": "P1",
+      "classification": "HUMAN",
+      "evidence_hint": "docs/SECURITY.md, docs/BCP.md, docs/INCIDENT-RESPONSE.md, GDPR/DPA reviewed"
+    },
+    {
+      "id": "pentest-001",
+      "category": "PENTEST",
+      "requirement": "External penetration test performed by an independent third party",
+      "severity": "P1",
+      "classification": "EXTERNAL",
+      "evidence_hint": "third-party pentest report — NOT_RUN until a real third party performs it"
+    },
+    {
+      "id": "ir-001",
+      "category": "INCIDENT RESPONSE",
+      "requirement": "Incident response runbook tested (tabletop or drill)",
+      "severity": "P1",
+      "classification": "HUMAN",
+      "evidence_hint": "docs/INCIDENT-RESPONSE.md + docs/BCP.md drill sign-off"
+    },
+    {
+      "id": "dr-001",
+      "category": "DISASTER RECOVERY",
+      "requirement": "Disaster recovery plan tested in staging",
+      "severity": "P1",
+      "classification": "INFRASTRUCTURE",
+      "evidence_hint": "docs/BCP.md DR runbook + restore drill sign-off"
+    }
+  ]
+}

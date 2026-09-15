@@ -125,4 +125,3 @@ def set_provider(provider: TelephonyProvider | None) -> None:
     """Swap the provider. Used by tests; `None` restores the real one."""
     global _default
     _default = provider
-

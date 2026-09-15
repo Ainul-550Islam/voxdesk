@@ -112,7 +112,7 @@ async def test_attack_3_body_tenant_id_is_ignored(client, db, tenant_a, tenant_b
     rows = (await db.execute(
         select(Lead).where(Lead.name == "Injected")
     )).scalars().all()
-    assert rows and all(l.tenant_id == tenant_a.id for l in rows)
+    assert rows and all(lead.tenant_id == tenant_a.id for lead in rows)
 
 
 # ============================================================================
@@ -309,4 +309,3 @@ async def test_nonexistent_random_uuid_also_returns_404(client, owner_a):
     headers = await auth_headers(client, owner_a)
     r = await client.get(f"/api/tenants/{uuid.uuid4()}/calls", headers=headers)
     assert r.status_code == 404
-

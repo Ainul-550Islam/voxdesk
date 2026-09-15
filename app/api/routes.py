@@ -5,19 +5,20 @@ import uuid
 from datetime import datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agent.llm_factory import PRESETS
+from app.agent.voice_settings import SPEECH_SPEED_MAX, SPEECH_SPEED_MIN
 from app.auth.dependencies import (
-    TenantContext, get_context, get_owned, get_platform_admin, require_permission,
+    TenantContext, get_owned, get_platform_admin, require_permission,
     scoped_permission,
 )
 from app.auth.permissions import Permission
 from app.db.models import (
-    Appointment, Call, CallDirection, CallStatus, CrmSync, Tenant, Turn,
+    Appointment, Call, CallDirection, CallStatus, CrmSync, Tenant,
 )
 from app.db.session import get_session
 from app.integrations.crm import hooks as crm_hooks
@@ -46,7 +47,10 @@ class TenantCreate(BaseModel):
     # মানুষের মতো শোনানোর নব
     humanize: bool = True
     vad_stop_secs: float = 0.45          # 0.30 দ্রুত <-> 0.70 নিরাপদ
-    speech_speed: float = 1.0
+    # ElevenLabs voice_settings.speed supports 0.7–1.2 (see
+    # app/agent/voice_settings.py); values outside are rejected rather than
+    # silently ignored by the provider.
+    speech_speed: float = Field(default=1.0, ge=SPEECH_SPEED_MIN, le=SPEECH_SPEED_MAX)
     temperature: float = 0.65
     voice_id: str | None = None
     language: str = "en-US"
@@ -57,7 +61,10 @@ class VoiceSettings(BaseModel):
     llm_preset: str | None = None
     humanize: bool | None = None
     vad_stop_secs: float | None = None
-    speech_speed: float | None = None
+    # ElevenLabs voice_settings.speed supports 0.7–1.2.
+    speech_speed: float | None = Field(
+        default=None, ge=SPEECH_SPEED_MIN, le=SPEECH_SPEED_MAX
+    )
     temperature: float | None = None
     voice_id: str | None = None
 
@@ -545,9 +552,9 @@ async def stats(
 
 from app.core import compliance as _compliance          # noqa: E402
 from app.core.i18n import get_profile, supported_languages  # noqa: E402
-from app.db.models import Campaign, Lead, LeadStatus, Reminder  # noqa: E402
+from app.db.models import Campaign, Lead, LeadStatus  # noqa: E402
 from app.telephony import ivr as _ivr                   # noqa: E402
-from app.telephony import phone
+from app.telephony import phone  # noqa: E402
 from app.telephony.outbound import run_campaign_tick    # noqa: E402
 
 
@@ -640,12 +647,15 @@ async def list_leads(
     )).scalars().all()
     return [
         {
-            "id": str(l.id), "name": l.name, "phone": l.phone, "email": l.email,
-            "company": l.company, "status": l.status.value, "score": l.score,
-            "attempts": l.attempts,
-            "next_attempt_at": l.next_attempt_at.isoformat() if l.next_attempt_at else None,
+            "id": str(lead.id), "name": lead.name, "phone": lead.phone,
+            "email": lead.email, "company": lead.company,
+            "status": lead.status.value, "score": lead.score,
+            "attempts": lead.attempts,
+            "next_attempt_at": (
+                lead.next_attempt_at.isoformat() if lead.next_attempt_at else None
+            ),
         }
-        for l in rows
+        for lead in rows
     ]
 
 
@@ -830,4 +840,3 @@ async def tenant_compliance(
         "recording_enabled": tenant.record_calls,
         "language": get_profile(tenant.language).name,
     }
-

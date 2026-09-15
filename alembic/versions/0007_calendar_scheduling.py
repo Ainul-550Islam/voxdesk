@@ -78,6 +78,16 @@ calendar_provider_type = sa.Enum(
     "GOOGLE", "GOOGLE_SERVICE_ACCOUNT", "MICROSOFT", "CALCOM", "INTERNAL",
     name="calendarprovidertype",
 )
+# Same PostgreSQL type with `create_type=False`: `op.create_table` emits
+# `CREATE TYPE` for native enum columns, and the explicit `.create()` in
+# `upgrade()` has already created it (the `add_column` on appointments needs
+# it to exist first). Emitting it twice fails on a fresh database with
+# "type ... already exists", so the table DDL must reference the existing
+# type rather than re-create it.
+calendar_provider_type_existing = postgresql.ENUM(
+    "GOOGLE", "GOOGLE_SERVICE_ACCOUNT", "MICROSOFT", "CALCOM", "INTERNAL",
+    name="calendarprovidertype", create_type=False,
+)
 
 NEW_AUDIT_ACTIONS = (
     "CALENDAR_CONNECTED",
@@ -186,7 +196,7 @@ def upgrade() -> None:
             "tenant_id", postgresql.UUID(as_uuid=True),
             sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False,
         ),
-        sa.Column("provider", calendar_provider_type, nullable=False),
+        sa.Column("provider", calendar_provider_type_existing, nullable=False),
         sa.Column("is_enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("is_primary", sa.Boolean(), nullable=False, server_default=sa.false()),
         # AES-256-GCM envelope, same scheme and key ring as CRM credentials.
@@ -280,7 +290,7 @@ def upgrade() -> None:
             "tenant_id", postgresql.UUID(as_uuid=True),
             sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False,
         ),
-        sa.Column("provider", calendar_provider_type, nullable=False),
+        sa.Column("provider", calendar_provider_type_existing, nullable=False),
         sa.Column("provider_event_id", sa.String(255), nullable=False),
         sa.Column("resource_id", sa.String(255), nullable=True),
         sa.Column(
@@ -342,4 +352,3 @@ def downgrade() -> None:
     # PostgreSQL has no `ALTER TYPE ... DROP VALUE`, and rebuilding the type
     # would mean rewriting every audit_logs row. Unused enum members are
     # harmless; destroying an audit trail to tidy one up is not.
-

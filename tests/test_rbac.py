@@ -177,7 +177,7 @@ def test_stream_token_is_bound_to_one_call_and_expires():
     assert verify_stream_token("CA-real", stale) is False         # expired
 
 
-def test_twilio_signature_is_enforced_outside_development(monkeypatch):
+def test_twilio_signature_is_enforced_when_verification_is_enabled(monkeypatch):
     """The messaging webhook used to accept anything. It must not."""
     import asyncio
 
@@ -192,5 +192,5 @@ def test_twilio_signature_is_enforced_outside_development(monkeypatch):
             return {"From": "+15550001", "Body": "hi"}
 
     monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "twilio_skip_webhook_verify", False)
     assert asyncio.run(verify_twilio_request(FakeRequest())) is False
-

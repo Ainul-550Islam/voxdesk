@@ -39,4 +39,3 @@ def set_storage(storage: Storage | None) -> None:
     """Override the backend. Used by tests; None restores configuration."""
     global _storage
     _storage = storage
-

@@ -56,4 +56,3 @@ export function makeCan(permissions) {
 
 /** A `can` that grants nothing. Used before `/auth/me` has resolved. */
 export const denyAll = makeCan([])
-

@@ -146,4 +146,3 @@ def supported_languages() -> list[dict]:
         }
         for p in LANGUAGES.values()
     ]
-

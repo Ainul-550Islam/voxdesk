@@ -102,10 +102,10 @@ NEW_AUDIT_ACTIONS = (
 def upgrade() -> None:
     bind = op.get_bind()
 
-    crm_provider_type.create(bind, checkfirst=True)
-    crm_entity_type.create(bind, checkfirst=True)
-    crm_event_type.create(bind, checkfirst=True)
-    crm_sync_status.create(bind, checkfirst=True)
+    # NOTE: the enum types are created by the `op.create_table` calls below
+    # (SQLAlchemy emits `CREATE TYPE` for enum columns). Creating them first
+    # and then again via the table DDL emits each type twice and fails on a
+    # fresh database with "type ... already exists".
 
     # ALTER TYPE ... ADD VALUE cannot run inside a transaction block on older
     # PostgreSQL, and does not exist at all on SQLite, so it is guarded.
@@ -365,4 +365,3 @@ def downgrade() -> None:
     # PostgreSQL has no `ALTER TYPE ... DROP VALUE`, and rebuilding the type
     # would require rewriting every audit_logs row. Leaving unused members in
     # an enum is harmless; destroying an audit trail to tidy one up is not.
-

@@ -122,4 +122,3 @@ def redact(value: str | None) -> str:
     head = normalized[:2]
     tail = normalized[-2:]
     return f"{head}{'*' * (len(normalized) - 4)}{tail}"
-

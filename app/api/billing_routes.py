@@ -545,4 +545,3 @@ async def receive_webhook(
         "handled": outcome.handled,
         "duplicate": outcome.duplicate,
     }
-

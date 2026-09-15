@@ -354,4 +354,3 @@ def booking_idempotency_key(
     start_utc = _require_utc(start, "start")
     basis = f"{tenant_id}|{who}|{start_utc.isoformat()}"
     return hashlib.sha256(basis.encode()).hexdigest()[:48]
-

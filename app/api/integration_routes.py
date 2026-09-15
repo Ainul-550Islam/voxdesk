@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.dependencies import TenantContext, record_audit, require_permission
 from app.auth.permissions import Permission
 from app.core.logging import log
+from app.core.ssrf import OutboundUrlError, validate_outbound_url
 from app.db.models import (
     AuditAction,
     CrmEvent,
@@ -515,6 +516,26 @@ def _validated_config(
                     "phone numbers and call summaries"
                 ),
             )
+        try:
+            # SSRF guard: the webhook destination must not be loopback,
+            # link-local, RFC 1918, the cloud metadata endpoint, or a
+            # special-use hostname.
+            validate_outbound_url(str(url), require_https=True)
+        except OutboundUrlError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+    # `base_url` carries a bearer access token in the Authorization header, so
+    # it gets the same SSRF guard plus a mandatory https scheme. The official
+    # provider hosts (api.hubapi.com, services.leadconnectorhq.com,
+    # api.getjobber.com) are https by default, so this blocks only what a
+    # tenant should never be able to set.
+    base_url = cleaned.get("base_url")
+    if base_url is not None:
+        try:
+            validate_outbound_url(str(base_url), require_https=True)
+        except OutboundUrlError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
     return cleaned
 
 
@@ -633,4 +654,3 @@ async def delete_integration(
     )
     await session.commit()
     return None
-

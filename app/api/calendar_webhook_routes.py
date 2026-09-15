@@ -410,10 +410,12 @@ async def prune_receipts(session: AsyncSession, *, older_than_days: int = 30) ->
 
     cutoff = now_utc() - timedelta(days=older_than_days)
     result = await session.execute(
-        delete(CalendarWebhookReceipt).where(
-            CalendarWebhookReceipt.received_at < cutoff
-        )
+        delete(CalendarWebhookReceipt)
+        .where(CalendarWebhookReceipt.received_at < cutoff)
+        # Never evaluate this predicate against in-memory rows: a loaded
+        # `received_at` object and this cutoff can differ in tz-awareness,
+        # and evaluate would raise instead of deleting.
+        .execution_options(synchronize_session=False)
     )
     await session.commit()
     return result.rowcount or 0
-

@@ -767,4 +767,3 @@ class TestGoogleServiceAccountProvider:
         provider = GoogleServiceAccountProvider(ctx(credentials={}, config={}))
         with pytest.raises(CalendarConfigurationError):
             await provider.get_busy(WINDOW)
-

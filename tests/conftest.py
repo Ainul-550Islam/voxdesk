@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.auth import password as pw
+from app.core.config import settings
 from app.db.models import Base, Tenant, User, UserRole
 from app.db.session import get_session
 
@@ -26,6 +27,19 @@ from app.db.session import get_session
 pw.BCRYPT_ROUNDS = 4
 
 TEST_PASSWORD = "Correct-Horse-Battery-9!"
+
+
+@pytest.fixture(autouse=True)
+def _twilio_webhook_bypass_for_route_tests():
+    """Twilio webhook routes are exercised here with plain form posts and no
+    X-Twilio-Signature. The harness runs under development configuration, so it
+    enables the explicit dev-only bypass flag (TWILIO_SKIP_WEBHOOK_VERIFY).
+    Tests that assert the fail-closed behaviour disable the flag with
+    monkeypatch."""
+    previous = settings.twilio_skip_webhook_verify
+    settings.twilio_skip_webhook_verify = True
+    yield
+    settings.twilio_skip_webhook_verify = previous
 
 
 @pytest_asyncio.fixture
@@ -805,4 +819,3 @@ def stripe_event(event_type: str, obj: dict, *, event_id=None, created=None) -> 
         "created": created if created is not None else int(_t.time()),
         "data": {"object": obj},
     }).encode()
-

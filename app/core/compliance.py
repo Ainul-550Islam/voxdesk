@@ -224,4 +224,3 @@ async def register_brand(
 
     log.info("a2p.brand_submitted", sid=profile.sid)
     return {"ok": True, "customer_profile_sid": profile.sid, "status": "pending_review"}
-

@@ -212,4 +212,3 @@ def next_node(flow: dict[str, Any], node_id: str, digit: str) -> str:
     node = flow.get("nodes", {}).get(node_id, {})
     gather = node.get("gather") or {}
     return gather.get(str(digit)) or node.get("timeout_goto") or flow.get("start", "start")
-

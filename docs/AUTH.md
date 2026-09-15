@@ -312,12 +312,13 @@ cd dashboard && npm run dev      # UI   → http://localhost:5173
 - [ ] `CORS_ORIGINS` set to your real dashboard origin only
 - [ ] HTTPS everywhere (the refresh cookie is `Secure` in production and will
       not be sent over plain HTTP)
+- [x] Application-level per-IP rate limiting in front of `/auth/login`
+      (`RATE_LIMIT_ENABLED`, `app/core/rate_limit.py`); a WAF / reverse-proxy
+      limiter is still recommended for defence-in-depth against distributed
+      sprays
 - [ ] `alembic upgrade head`
 - [ ] At least one owner created per tenant, via `scripts.create_owner`
 - [ ] Database backups cover `users`, `refresh_tokens` and `audit_logs`
-- [ ] Rate limiting at the edge in front of `/auth/login` (application-level
-      lockout is per-account; it does not stop a distributed spray across many
-      accounts)
 
 ---
 
@@ -328,9 +329,10 @@ cd dashboard && npm run dev      # UI   → http://localhost:5173
 2. **No password reset flow.** Requires email delivery, which VoxDesk does not
    yet have. An owner can currently only re-create an account.
 3. **No MFA.** The schema (`token_version`, audit log) is ready for it.
-4. **Login rate limiting is per-account, not per-IP.** Put a WAF or a reverse
-   proxy limiter in front in production.
+4. **Login rate limiting is per-IP at the application level** (off by default;
+   `RATE_LIMIT_ENABLED=true` and `RATE_LIMIT_LOGIN_PER_MINUTE`). A WAF or
+   reverse-proxy limiter in front is still recommended for a distributed
+   spray across many source IPs.
 5. **The Twilio signature check is disabled when `APP_ENV=development`** — a
    pre-existing convenience, unchanged by this step, and a reason production
    must never run with the development flag.
-

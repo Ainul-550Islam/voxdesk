@@ -398,14 +398,14 @@ function Speech({ draft, set, writable }) {
         <Field
           label="Speech speed"
           htmlFor="agent-speed"
-          hint="1.0 is normal pace."
+          hint="1.0 is normal pace. Supported range 0.7–1.2."
         >
           <input
             id="agent-speed"
             className="input"
             type="number"
-            min={0.5}
-            max={2}
+            min={0.7}
+            max={1.2}
             step={0.05}
             value={draft.speech_speed}
             onChange={set('speech_speed')}

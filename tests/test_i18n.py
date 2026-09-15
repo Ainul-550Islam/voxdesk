@@ -91,4 +91,3 @@ def test_supported_languages_feeds_the_dropdown():
     rows = supported_languages()
     assert len(rows) == len(LANGUAGES)
     assert all({"code", "label", "native", "stt_model"} <= set(r) for r in rows)
-

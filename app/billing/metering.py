@@ -525,4 +525,3 @@ def billable_seconds(duration_seconds: float | None) -> int:
     if not duration_seconds or duration_seconds <= 0:
         return 0
     return max(MINIMUM_BILLABLE_SECONDS, int(duration_seconds))
-

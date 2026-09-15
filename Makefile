@@ -1,13 +1,15 @@
-.PHONY: help up down logs migrate seed test lint dev clean
+.PHONY: help up down logs migrate seed test lint deps-check contracts-check dev clean
 
 help:
-	@echo "make up       - start postgres + api + scheduler"
-	@echo "make migrate  - apply database migrations"
-	@echo "make seed     - create a demo tenant"
-	@echo "make test     - run the test suite"
-	@echo "make lint     - ruff check"
-	@echo "make dev      - run the api locally (no docker)"
-	@echo "make down     - stop everything"
+	@echo "make up          - start postgres + api + scheduler"
+	@echo "make migrate     - apply database migrations"
+	@echo "make seed        - create a demo tenant"
+	@echo "make test        - run the test suite"
+	@echo "make lint        - ruff check"
+	@echo "make deps-check  - verify every pinned dependency imports + version-matches"
+	@echo "make contracts-check - compile protobuf contracts + cross-check enums/tenancy"
+	@echo "make dev         - run the api locally (no docker)"
+	@echo "make down        - stop everything"
 
 up:
 	docker compose up -d --build
@@ -36,6 +38,12 @@ test:
 
 lint:
 	ruff check app tests scripts
+
+deps-check:
+	python scripts/verify_dependencies.py
+
+contracts-check:
+	python scripts/verify_contracts.py
 
 dev:
 	uvicorn app.main:app --reload --host 0.0.0.0 --port 8000

@@ -66,4 +66,3 @@ def test_redact_keeps_correlation_but_not_the_number():
     assert "5550101" not in redacted
     assert phone.redact(None) == ""
     assert phone.redact("client:alice") == "client:***"
-
