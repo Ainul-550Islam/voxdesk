@@ -1,0 +1,470 @@
+From 5ce0d7211c31065eb05d391f42c5f35bbd399412 Mon Sep 17 00:00:00 2001
+From: VoxDesk Phase A <phase-a@local.invalid>
+Date: Fri, 11 Sep 2026 06:22:39 +0000
+Subject: Step 9 Phase A: production safety hardening
+
+- Gate Base.metadata.create_all to non-production so Alembic is the sole
+  schema owner in production (app/main.py)
+- Make Twilio webhook verification fail closed behind an explicit dev-only
+  TWILIO_SKIP_WEBHOOK_VERIFY flag, refused by validate_security in production
+  (app/core/config.py, app/telephony/stream_auth.py)
+- Disable /docs, /redoc and /openapi.json in production (app/main.py)
+- Point .env.example DATABASE_URL at the compose 'db' service host
+- Add tests for all four behaviours and update the two suites that relied on
+  the old APP_ENV=development bypass
+---
+ .env.example                    |  11 +-
+ app/core/config.py              |  11 ++
+ app/main.py                     |  28 ++++-
+ app/telephony/stream_auth.py    |   9 +-
+ tests/conftest.py               |  14 +++
+ tests/test_call_callbacks.py    |  10 +-
+ tests/test_production_safety.py | 211 ++++++++++++++++++++++++++++++++
+ tests/test_rbac.py              |   3 +-
+ 8 files changed, 285 insertions(+), 12 deletions(-)
+ create mode 100644 tests/test_production_safety.py
+
+diff --git a/.env.example b/.env.example
+index 1c76014..63ff794 100644
+--- a/.env.example
++++ b/.env.example
+@@ -18,13 +18,22 @@ LOCKOUT_MINUTES=15
+ CORS_ORIGINS=http://localhost:5173
+ 
+ # ---------- Database ----------
+-DATABASE_URL=postgresql+asyncpg://voxdesk:voxdesk@localhost:5432/voxdesk
++# Inside docker-compose the Postgres service is named `db`, so the container
++# reaches it at host `db`. For a local (non-Docker) run against Postgres on
++# this machine, replace `db` with `localhost`.
++DATABASE_URL=postgresql+asyncpg://voxdesk:voxdesk@db:5432/voxdesk
+ 
+ # ---------- Twilio ----------
+ TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ TWILIO_AUTH_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ TWILIO_PHONE_NUMBER=+15550001111
+ 
++# Webhook signature verification is ON by default (fail-closed). Set this to
++# true ONLY for local development, to exercise webhooks with curl and no valid
++# X-Twilio-Signature. MUST remain false in production -- the app refuses to
++# start in production if it is enabled.
++TWILIO_SKIP_WEBHOOK_VERIFY=false
++
+ # ---------- Speech to Text ----------
+ DEEPGRAM_API_KEY=xxxxxxxx
+ DEEPGRAM_MODEL=nova-3
+diff --git a/app/core/config.py b/app/core/config.py
+index ccc02ff..6d0860c 100644
+--- a/app/core/config.py
++++ b/app/core/config.py
+@@ -33,6 +33,12 @@ class Settings(BaseSettings):
+     twilio_auth_token: str = ""
+     twilio_phone_number: str = ""
+ 
++    # Twilio webhook signature verification is ON by default (fail-closed).
++    # This opt-in flag disables it for local development so webhooks can be
++    # exercised with curl and no valid X-Twilio-Signature. It MUST stay false
++    # in production -- validate_security() refuses to boot otherwise.
++    twilio_skip_webhook_verify: bool = False
++
+     # Deepgram (STT)
+     deepgram_api_key: str = ""
+     deepgram_model: str = "nova-3"
+@@ -233,6 +239,11 @@ class Settings(BaseSettings):
+             problems.append("PUBLIC_BASE_URL must use https in production")
+         if self.is_production and not self.twilio_auth_token:
+             problems.append("TWILIO_AUTH_TOKEN is required to verify webhooks")
++        if self.is_production and self.twilio_skip_webhook_verify:
++            problems.append(
++                "TWILIO_SKIP_WEBHOOK_VERIFY must not be enabled in production; "
++                "it disables Twilio webhook signature verification"
++            )
+ 
+         if self.knowledge_storage_backend == "s3" and not self.knowledge_s3_bucket:
+             problems.append("KNOWLEDGE_S3_BUCKET is required when the backend is s3")
+diff --git a/app/main.py b/app/main.py
+index 2e8690c..d1ae6dc 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -38,8 +38,13 @@ async def lifespan(app: FastAPI):
+             log.warning("config.insecure", problem=problem)
+ 
+     engine = get_engine()
+-    async with engine.begin() as conn:
+-        await conn.run_sync(Base.metadata.create_all)   # use Alembic in production
++    if not settings.is_production:
++        # Development/test bootstrap: create any missing tables so the app is
++        # usable without running migrations. Production never does this --
++        # Alembic is the sole schema owner there, and create_all would build
++        # schema outside the migration history (see alembic/versions/).
++        async with engine.begin() as conn:
++            await conn.run_sync(Base.metadata.create_all)
+ 
+     # STEP 7: make sure the plan catalogue exists, and check that every active
+     # priced plan has a provider price id.
+@@ -76,7 +81,24 @@ async def lifespan(app: FastAPI):
+     await engine.dispose()
+ 
+ 
+-app = FastAPI(title="VoxDesk", version="0.4.0", lifespan=lifespan)
++def _api_docs_config() -> dict[str, str | None]:
++    """Swagger / ReDoc / OpenAPI are developer surfaces.
++
++    In production they expose the full API schema and an interactive
++    "try it out" console, so they are disabled there. Development keeps the
++    FastAPI defaults.
++    """
++    if settings.is_production:
++        return {"docs_url": None, "redoc_url": None, "openapi_url": None}
++    return {}
++
++
++app = FastAPI(
++    title="VoxDesk",
++    version="0.4.0",
++    lifespan=lifespan,
++    **_api_docs_config(),
++)
+ 
+ app.add_middleware(
+     CORSMiddleware,
+diff --git a/app/telephony/stream_auth.py b/app/telephony/stream_auth.py
+index e4ce5d3..67bfdca 100644
+--- a/app/telephony/stream_auth.py
++++ b/app/telephony/stream_auth.py
+@@ -79,11 +79,12 @@ async def verify_twilio_request(request: Request) -> bool:
+     and the messaging webhooks need it and there must be exactly one
+     implementation to review.
+ 
+-    Bypassed when APP_ENV=development so webhooks can be exercised with curl.
+-    Production must never run with the development flag -- the startup gate in
+-    app/main.py enforces the rest of the production configuration.
++    Verification is enabled unless the explicit dev-only flag
++    TWILIO_SKIP_WEBHOOK_VERIFY is set. That flag defaults to false and the
++    startup gate in app/main.py refuses to run production with it enabled, so
++    a misconfigured environment can never silently disable verification.
+     """
+-    if settings.app_env == "development":
++    if settings.twilio_skip_webhook_verify:
+         return True
+ 
+     from twilio.request_validator import RequestValidator
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 38676f0..306a5b6 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
+ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+ 
+ from app.auth import password as pw
++from app.core.config import settings
+ from app.db.models import Base, Tenant, User, UserRole
+ from app.db.session import get_session
+ 
+@@ -28,6 +29,19 @@ pw.BCRYPT_ROUNDS = 4
+ TEST_PASSWORD = "Correct-Horse-Battery-9!"
+ 
+ 
++@pytest.fixture(autouse=True)
++def _twilio_webhook_bypass_for_route_tests():
++    """Twilio webhook routes are exercised here with plain form posts and no
++    X-Twilio-Signature. The harness runs under development configuration, so it
++    enables the explicit dev-only bypass flag (TWILIO_SKIP_WEBHOOK_VERIFY).
++    Tests that assert the fail-closed behaviour disable the flag with
++    monkeypatch."""
++    previous = settings.twilio_skip_webhook_verify
++    settings.twilio_skip_webhook_verify = True
++    yield
++    settings.twilio_skip_webhook_verify = previous
++
++
+ @pytest_asyncio.fixture
+ async def engine():
+     eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+diff --git a/tests/test_call_callbacks.py b/tests/test_call_callbacks.py
+index 5f2a452..25ca986 100644
+--- a/tests/test_call_callbacks.py
++++ b/tests/test_call_callbacks.py
+@@ -3,8 +3,9 @@ Provider callback handling: signatures, idempotency, and ordering races.
+ 
+ These drive the real FastAPI webhook routes over the real router stack against
+ a real database. Twilio itself is not involved -- signature verification is
+-bypassed in APP_ENV=development, which is exactly the configuration these
+-routes run under in tests -- but every state change is asserted in the DB.
++bypassed because the test harness enables the dev-only flag
++TWILIO_SKIP_WEBHOOK_VERIFY (see tests/conftest.py) -- but every state change
++is asserted in the DB.
+ """
+ from __future__ import annotations
+ 
+@@ -54,13 +55,14 @@ async def system_texts(db, call):
+ # ================================================================ security ===
+ 
+ @pytest.mark.asyncio
+-async def test_status_webhook_rejects_a_bad_signature_outside_development(
++async def test_status_webhook_rejects_a_bad_signature_when_verification_is_on(
+     client, db, monkeypatch
+ ):
+     """This route previously had no signature check at all."""
+     tenant = await make_tenant(db, "Sig Co")
+     call = await seed_call(db, tenant)
+     monkeypatch.setattr(settings, "app_env", "production")
++    monkeypatch.setattr(settings, "twilio_skip_webhook_verify", False)
+ 
+     resp = await post_status(client, call.call_sid, "completed")
+ 
+@@ -74,6 +76,7 @@ async def test_transfer_status_webhook_rejects_a_bad_signature(client, db, monke
+     tenant = await tenant_with_human(db)
+     call = await seed_call(db, tenant)
+     monkeypatch.setattr(settings, "app_env", "production")
++    monkeypatch.setattr(settings, "twilio_skip_webhook_verify", False)
+     assert (await post_dial(client, call.call_sid, "answered")).status_code == 403
+ 
+ 
+@@ -348,6 +351,7 @@ async def test_provider_reported_failure_is_not_overridden_by_a_later_connect(
+ async def test_outbound_answer_webhook_requires_a_signature(client, monkeypatch):
+     """The last telephony route that was still unauthenticated."""
+     monkeypatch.setattr(settings, "app_env", "production")
++    monkeypatch.setattr(settings, "twilio_skip_webhook_verify", False)
+     resp = await client.post(
+         "/telephony/outbound-answer",
+         data={"CallSid": "CA-whatever", "AnsweredBy": "human"},
+diff --git a/tests/test_production_safety.py b/tests/test_production_safety.py
+new file mode 100644
+index 0000000..9267ffa
+--- /dev/null
++++ b/tests/test_production_safety.py
+@@ -0,0 +1,211 @@
++"""
++Step 9 Phase A — production safety hardening.
++
++These tests pin the three fail-closed behaviours introduced in Phase A:
++
++1. Production startup must NOT create tables with Base.metadata.create_all
++   (Alembic is the sole schema owner); development/test may.
++2. Twilio webhook verification is enabled unless the explicit dev-only flag
++   TWILIO_SKIP_WEBHOOK_VERIFY is set, and production refuses that flag.
++3. /docs, /redoc and /openapi.json are disabled in production and retained in
++   development.
++"""
++from __future__ import annotations
++
++import pytest
++from fastapi import FastAPI
++from httpx import ASGITransport, AsyncClient
++
++from app.core.config import Settings, settings
++from app.main import app as voxdesk_app
++from app.main import lifespan
++
++
++# --------------------------------------------------------- create_all gate ---
++
++class _RecordingEngine:
++    """Fake engine that records whether a run_sync (create_all) happened."""
++
++    def __init__(self):
++        self.run_sync_calls: list = []
++
++    def begin(self):
++        return _RecordingConnection(self)
++
++    async def dispose(self):
++        pass
++
++
++class _RecordingConnection:
++    def __init__(self, engine):
++        self.engine = engine
++
++    async def __aenter__(self):
++        return self
++
++    async def __aexit__(self, *args):
++        return False
++
++    async def run_sync(self, fn, *args, **kwargs):
++        self.engine.run_sync_calls.append(fn)
++
++
++class _DummySession:
++    async def __aenter__(self):
++        return self
++
++    async def __aexit__(self, *args):
++        return False
++
++
++class _DummyMaker:
++    def __call__(self):
++        return _DummySession()
++
++
++async def _fake_sync_seed_plans(session):
++    return None
++
++
++async def _fake_list_plans(session, active_only=True):
++    return []
++
++
++def _fake_configuration_problems(plans, is_production):
++    return []
++
++
++def _patch_lifespan_dependencies(monkeypatch, engine, app_env):
++    """Redirect every external dependency the lifespan touches so it can run
++    without a real database, then select the environment mode."""
++    monkeypatch.setattr("app.main.get_engine", lambda: engine)
++    monkeypatch.setattr("app.db.session.get_sessionmaker", lambda: _DummyMaker())
++    monkeypatch.setattr("app.billing.plans.sync_seed_plans", _fake_sync_seed_plans)
++    monkeypatch.setattr("app.billing.plans.list_plans", _fake_list_plans)
++    monkeypatch.setattr(
++        "app.billing.plans.configuration_problems", _fake_configuration_problems
++    )
++    monkeypatch.setattr(settings, "app_env", app_env)
++    monkeypatch.setattr(Settings, "validate_security", lambda self: [])
++
++
++@pytest.mark.asyncio
++async def test_production_startup_does_not_create_tables(monkeypatch):
++    """Alembic is the sole schema owner in production."""
++    engine = _RecordingEngine()
++    _patch_lifespan_dependencies(monkeypatch, engine, "production")
++
++    async with lifespan(voxdesk_app):
++        pass
++
++    assert engine.run_sync_calls == []
++
++
++@pytest.mark.asyncio
++async def test_development_startup_creates_tables(monkeypatch):
++    """Development/test still bootstrap schema so the app runs unmigrated."""
++    engine = _RecordingEngine()
++    _patch_lifespan_dependencies(monkeypatch, engine, "development")
++
++    async with lifespan(voxdesk_app):
++        pass
++
++    assert len(engine.run_sync_calls) == 1
++
++
++# ------------------------------------------------------------ docs exposure ---
++
++def test_production_disables_api_docs(monkeypatch):
++    monkeypatch.setattr(settings, "app_env", "production")
++    from app.main import _api_docs_config
++
++    assert _api_docs_config() == {
++        "docs_url": None,
++        "redoc_url": None,
++        "openapi_url": None,
++    }
++
++
++def test_development_keeps_api_docs(monkeypatch):
++    monkeypatch.setattr(settings, "app_env", "development")
++    from app.main import _api_docs_config
++
++    assert _api_docs_config() == {}
++
++
++@pytest.mark.asyncio
++async def test_production_docs_endpoints_return_404(monkeypatch):
++    monkeypatch.setattr(settings, "app_env", "production")
++    from app.main import _api_docs_config
++
++    prod_app = FastAPI(**_api_docs_config())
++    async with AsyncClient(
++        transport=ASGITransport(app=prod_app), base_url="http://test"
++    ) as client:
++        assert (await client.get("/docs")).status_code == 404
++        assert (await client.get("/redoc")).status_code == 404
++        assert (await client.get("/openapi.json")).status_code == 404
++
++
++@pytest.mark.asyncio
++async def test_development_docs_endpoints_are_available(monkeypatch):
++    monkeypatch.setattr(settings, "app_env", "development")
++    from app.main import _api_docs_config
++
++    dev_app = FastAPI(**_api_docs_config())
++    async with AsyncClient(
++        transport=ASGITransport(app=dev_app), base_url="http://test"
++    ) as client:
++        assert (await client.get("/docs")).status_code == 200
++        assert (await client.get("/openapi.json")).status_code == 200
++
++
++# ------------------------------------------------------- Twilio fail-closed ---
++
++class _FakeTwilioRequest:
++    url = "https://example.com/telephony/voice"
++    headers = {"X-Twilio-Signature": "obviously-wrong"}
++
++    async def form(self):
++        return {"From": "+15550001", "CallSid": "CA123"}
++
++
++@pytest.mark.asyncio
++async def test_development_with_bypass_disabled_requires_signature(monkeypatch):
++    from app.telephony.stream_auth import verify_twilio_request
++
++    monkeypatch.setattr(settings, "app_env", "development")
++    monkeypatch.setattr(settings, "twilio_skip_webhook_verify", False)
++    assert await verify_twilio_request(_FakeTwilioRequest()) is False
++
++
++@pytest.mark.asyncio
++async def test_development_with_bypass_enabled_skips_signature(monkeypatch):
++    from app.telephony.stream_auth import verify_twilio_request
++
++    monkeypatch.setattr(settings, "app_env", "development")
++    monkeypatch.setattr(settings, "twilio_skip_webhook_verify", True)
++    assert await verify_twilio_request(_FakeTwilioRequest()) is True
++
++
++@pytest.mark.asyncio
++async def test_production_with_bypass_disabled_requires_signature(monkeypatch):
++    from app.telephony.stream_auth import verify_twilio_request
++
++    monkeypatch.setattr(settings, "app_env", "production")
++    monkeypatch.setattr(settings, "twilio_skip_webhook_verify", False)
++    assert await verify_twilio_request(_FakeTwilioRequest()) is False
++
++
++def test_production_with_bypass_enabled_is_rejected_by_security_validation():
++    from app.core.config import Settings
++
++    prod = Settings(app_env="production", twilio_skip_webhook_verify=True)
++    problems = prod.validate_security()
++    assert any("TWILIO_SKIP_WEBHOOK_VERIFY" in p for p in problems), problems
++
++
++def test_bypass_flag_defaults_to_false():
++    from app.core.config import Settings
++
++    assert Settings().twilio_skip_webhook_verify is False
+diff --git a/tests/test_rbac.py b/tests/test_rbac.py
+index 330b7c0..5db3796 100644
+--- a/tests/test_rbac.py
++++ b/tests/test_rbac.py
+@@ -177,7 +177,7 @@ def test_stream_token_is_bound_to_one_call_and_expires():
+     assert verify_stream_token("CA-real", stale) is False         # expired
+ 
+ 
+-def test_twilio_signature_is_enforced_outside_development(monkeypatch):
++def test_twilio_signature_is_enforced_when_verification_is_enabled(monkeypatch):
+     """The messaging webhook used to accept anything. It must not."""
+     import asyncio
+ 
+@@ -192,4 +192,5 @@ def test_twilio_signature_is_enforced_outside_development(monkeypatch):
+             return {"From": "+15550001", "Body": "hi"}
+ 
+     monkeypatch.setattr(settings, "app_env", "production")
++    monkeypatch.setattr(settings, "twilio_skip_webhook_verify", False)
+     assert asyncio.run(verify_twilio_request(FakeRequest())) is False
+\ No newline at end of file
+-- 
+2.47.3
+
