@@ -1,0 +1,28 @@
+# DTLS-SRTP (RFC 5764) termination shim — the ONE external dependency
+# tree this workspace was ever allowed to import (PROMPT2-DESIGN.md,
+# Item 2): `dimpl` — a Sans-IO, sync DTLS 1.2/1.3 engine aimed at WebRTC
+# by the str0m author (MIT OR Apache-2.0, forbid(unsafe_code)). Default
+# features: aws-lc-rs crypto provider + rcgen self-signed identity
+# generation (the author's audited, default path; the pure-RustCrypto
+# `rust-crypto` feature exists but drops cert generation, which rcgen
+# hard-couples to aws-lc-rs upstream).
+#
+# Everything in THIS crate is ours: the role negotiation, drive loop,
+# fingerprint verification, and the RFC 5764 §4.2 key split that feeds
+# `Engine::bind_srtp_split`.
+[package]
+name = "dtls"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "VoxDesk DTLS-SRTP termination shim over dimpl (RFC 5764)"
+
+[dependencies]
+dimpl = "=0.7.3"
+
+[dev-dependencies]
+# SRTP round-trip proof: keys this shim exports must actually protect and
+# unprotect media with the engine's RFC-3711 stack.
+streams = { path = "../streams" }
+webrtc = { path = "../webrtc" }

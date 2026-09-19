@@ -1,0 +1,17 @@
+[package]
+name = "media-engine"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "media-engine"
+path = "src/main.rs"
+
+[dependencies]
+concurrency = { path = "../../crates/concurrency" }
+dtls = { path = "../../crates/dtls" }
+engine = { path = "../../crates/engine" }
+routing = { path = "../../crates/routing" }
+transport = { path = "../../crates/transport" }
+webrtc = { path = "../../crates/webrtc" }

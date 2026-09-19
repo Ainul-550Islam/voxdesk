@@ -1,0 +1,596 @@
+From 71388cbcf0740d367497adf8226dcfc93cdc3ed9 Mon Sep 17 00:00:00 2001
+From: VoxDesk Step 9 <step9@local.invalid>
+Date: Fri, 11 Sep 2026 09:21:19 +0000
+Subject: Step 9: scale/performance tooling + compliance policy
+
+- app/core/data_policy.py: pure retention policy (cutoff/is_expired) and AI
+  disclosure detection (EU AI Act Art.50 / US state transparency), plus a
+  compliance summary helper
+- app/core/config.py: CALL_RETENTION_DAYS and AI_DISCLOSURE_REQUIRED settings
+  (safe defaults, documented); .env.example documents both
+- docs/COMPLIANCE.md: full map of TCPA, A2P 10DLC, EU AI Act and healthcare
+  controls to the existing code (DNC, calling windows, retry backoff, SMS
+  content rules, encryption, audit, retention, disclosure)
+- docs/PERFORMANCE.md: voice-path latency budgets, guard-rail philosophy,
+  scale-up axes and known limits
+- loadtest/: Locust load test + runbook (liveness, readiness, SPA-404 probe)
+- tests/test_data_policy.py (11) + tests/test_performance_smoke.py (4):
+  deterministic policy and hot-path guard-rail tests
+---
+ .env.example                    | 12 ++++-
+ app/core/config.py              | 13 +++++
+ app/core/data_policy.py         | 85 +++++++++++++++++++++++++++++++
+ docs/COMPLIANCE.md              | 79 +++++++++++++++++++++++++++++
+ docs/PERFORMANCE.md             | 63 +++++++++++++++++++++++
+ loadtest/README.md              | 44 ++++++++++++++++
+ loadtest/locustfile.py          | 39 +++++++++++++++
+ tests/test_data_policy.py       | 89 +++++++++++++++++++++++++++++++++
+ tests/test_performance_smoke.py | 69 +++++++++++++++++++++++++
+ 9 files changed, 492 insertions(+), 1 deletion(-)
+ create mode 100644 app/core/data_policy.py
+ create mode 100644 docs/COMPLIANCE.md
+ create mode 100644 docs/PERFORMANCE.md
+ create mode 100644 loadtest/README.md
+ create mode 100644 loadtest/locustfile.py
+ create mode 100644 tests/test_data_policy.py
+ create mode 100644 tests/test_performance_smoke.py
+
+diff --git a/.env.example b/.env.example
+index 1086be6..3833480 100644
+--- a/.env.example
++++ b/.env.example
+@@ -63,4 +63,14 @@ SENTRY_DSN=
+ # Log level (DEBUG|INFO|WARNING|ERROR) and renderer ("console" for dev,
+ # "json" for production/machine-readable logs). Production defaults to JSON.
+ LOG_LEVEL=INFO
+-LOG_FORMAT=console
+\ No newline at end of file
++LOG_FORMAT=console
++
++# ---------- Data policy / compliance ----------
++# Retention (days) for call recordings and transcripts, which hold personal
++# data. GDPR/EU and healthcare buyers usually want 30-90; 365 is a safe US
++# default. See docs/COMPLIANCE.md.
++CALL_RETENTION_DAYS=365
++
++# EU AI Act transparency: callers must know they are speaking to an automated
++# agent. The tenant greeting is checked against this (see docs/COMPLIANCE.md).
++AI_DISCLOSURE_REQUIRED=true
+\ No newline at end of file
+diff --git a/app/core/config.py b/app/core/config.py
+index f0ae277..68b8a14 100644
+--- a/app/core/config.py
++++ b/app/core/config.py
+@@ -141,6 +141,19 @@ class Settings(BaseSettings):
+     log_level: str = "INFO"
+     log_format: str = "console"
+ 
++    # ---------- Data policy / compliance (STEP 9) ----------
++    # Retention for call recordings and transcripts, which hold personal data.
++    # Operator-configurable per jurisdiction: GDPR/EU and healthcare buyers
++    # usually want 30-90 days; 365 is a safe default for the US. Records older
++    # than the cutoff are flagged for deletion (app/core/data_policy.py,
++    # docs/COMPLIANCE.md).
++    call_retention_days: int = 365
++
++    # EU AI Act transparency (Art. 50) and several US state laws: a caller must
++    # know they are speaking to an automated agent. Default true; the tenant's
++    # greeting is checked with app.core.data_policy.ai_disclosure_present().
++    ai_disclosure_required: bool = True
++
+     @property
+     def is_production(self) -> bool:
+         return self.app_env.lower() in {"production", "prod"}
+diff --git a/app/core/data_policy.py b/app/core/data_policy.py
+new file mode 100644
+index 0000000..21e2d41
+--- /dev/null
++++ b/app/core/data_policy.py
+@@ -0,0 +1,85 @@
++"""Data retention and AI-disclosure policy helpers (Step 9 compliance).
++
++Two regulatory obligations every voice product must codify, not just document:
++
++1. Retention: call recordings and transcripts contain personally identifiable,
++   health-adjacent data. GDPR, the EU AI Act and healthcare-buyer contracts all
++   require a documented, configurable retention period and deletion of records
++   past it.
++2. Disclosure: the EU AI Act (transparency, Art. 50) and several US state laws
++   require a caller to know they are speaking to an automated agent.
++
++This module is deliberately pure: it computes policy decisions without touching
++the database, so it is fast, testable and safe to call from any context (API,
++scheduler, tests). Wiring deletion into the scheduler is documented in
++docs/COMPLIANCE.md; the policy itself lives here so it is reviewable in one
++place.
++"""
++from __future__ import annotations
++
++from datetime import datetime, timedelta, timezone
++
++# Terms a compliant greeting should contain so a caller knows they are speaking
++# to a machine. Matched case-insensitively against the tenant's greeting.
++DISCLOSURE_TERMS = (
++    "ai",
++    "a.i.",
++    "artificial",
++    "virtual",
++    "automated",
++    "assistant",
++    "digital assistant",
++    "bot",
++)
++
++
++def retention_cutoff(days: int, now: datetime | None = None) -> datetime:
++    """The moment before which a record is past the retention policy."""
++    now = now or datetime.now(timezone.utc)
++    return now - timedelta(days=max(days, 1))
++
++
++def is_expired(
++    created_at: datetime,
++    retention_days: int,
++    now: datetime | None = None,
++) -> bool:
++    """True when ``created_at`` falls before the retention cutoff."""
++    return _as_utc(created_at) < retention_cutoff(retention_days, now=now)
++
++
++def _as_utc(value: datetime) -> datetime:
++    if value.tzinfo is None:
++        # Naive datetimes in this codebase are UTC (datetime.utcnow).
++        return value.replace(tzinfo=timezone.utc)
++    return value.astimezone(timezone.utc)
++
++
++def ai_disclosure_present(greeting: str) -> bool:
++    """True when the greeting identifies the agent as automated.
++
++    The agent pipeline introduces itself with the tenant's greeting, so this is
++    the moment a caller learns whether they are talking to a machine. A greeting
++    such as "Thanks for calling Bright Smile Dental, this is Alex" names a human
++    voice and gives no automated-agent signal -- which is why the check exists
++    and the dashboard flags it (see docs/COMPLIANCE.md).
++    """
++    text = (greeting or "").lower()
++    return any(term in text for term in DISCLOSURE_TERMS)
++
++
++def ai_disclosure_compliant(greeting: str, *, required: bool) -> bool:
++    """Policy decision: is the greeting compliant given whether disclosure is
++    required (app.core.config.Settings.ai_disclosure_required)."""
++    return (not required) or ai_disclosure_present(greeting)
++
++
++def compliance_summary(*, greeting: str, disclosure_required: bool) -> dict:
++    """A small, pure summary used by tests and available to the API layer."""
++    return {
++        "ai_disclosure_required": disclosure_required,
++        "ai_disclosure_present": ai_disclosure_present(greeting),
++        "compliant": ai_disclosure_compliant(
++            greeting, required=disclosure_required
++        ),
++    }
+diff --git a/docs/COMPLIANCE.md b/docs/COMPLIANCE.md
+new file mode 100644
+index 0000000..328efca
+--- /dev/null
++++ b/docs/COMPLIANCE.md
+@@ -0,0 +1,79 @@
++# VoxDesk — Compliance map (TCPA · A2P 10DLC · EU AI Act · healthcare)
++
++This document maps VoxDesk's existing behaviour to the regulations buyers ask
++about, so a sales conversation or due-diligence questionnaire has one place to
++point. Where a control exists in code, the file is named. Where an action is
++the operator's responsibility, it is flagged **operator**.
++
++---
++
++## 1. TCPA (US telephone consumer protection)
++
++| Requirement | Where it lives |
++|---|---|
++| No calls outside the tenant's calling window | `app/telephony/outbound.py:is_call_window_open()` — enforced per-tenant in the tenant's own timezone; out-of-window leads are scheduled (`next_window_start()`), not dropped into the window |
++| Honour do-not-call | `app/telephony/outbound.py:next_callable_leads()` excludes DNC leads; `LeadStatus.DNC` set via `POST /api/tenants/{id}/leads/{id}/do-not-call` (`app/api/routes.py`) and the agent tool `mark_do_not_call` (`app/agent/functions.py`) |
++| Retry discipline (no hammering) | `RETRY_BACKOFF_HOURS = (1, 4, 24)` with an attempt cap, `app/telephony/outbound.py` |
++| Prior express consent | **operator** — captured at opt-in; the A2P registration checklist below demands the screenshot |
++
++## 2. A2P 10DLC (SMS in the US)
++
++Implemented in `app/core/compliance.py`:
++
++- `check_message()` blocks SHAFT content (cannabis, loans, gambling, firearms, tobacco/vape) and public URL shorteners **before** sending
++- `ensure_opt_out()` appends the required STOP footer; `is_sendable()` gates every outbound SMS
++- `count_segments()` reports GSM-7 vs UCS-2 (Bengali is UCS-2 — important for BD/English campaigns)
++- `registration_checklist()` is the client-facing paperwork list; `register_brand()` drives Twilio Trust Hub
++
++Surfaced through `POST /api/compliance/check-message` and `GET /api/compliance/a2p-checklist` (permission `COMPLIANCE_READ`).
++
++## 3. EU AI Act (transparency — Art. 50)
++
++| Requirement | Where it lives |
++|---|---|
++| Callers must know they are speaking to an automated agent | `AI_DISCLOSURE_REQUIRED=true` (default), checked by `app/core/data_policy.ai_disclosure_present()` against the tenant's greeting; a greeting like "…this is Alex…" with no AI signal is flagged non-compliant |
++| Records of the interaction | Call + Turn models (`app/db/models.py`) retain transcripts; audit trail in the `AuditEvent` table |
++
++**Operator:** ensure each tenant's greeting names the assistant as automated
++("…I'm Alex, an AI assistant…"). The disclosure check is the guardrail; the
++greeting text is tenant content.
++
++## 4. Healthcare / HIPAA-style expectations (dental vertical)
++
++VoxDesk is **not** a covered entity and makes no HIPAA compliance claim — say
++this plainly to buyers. What it does provide:
++
++| Control | Where it lives |
++|---|---|
++| PHI-ish data encrypted at rest (CRM credentials) | AES-256-GCM, `app/integrations/crm/crypto.py`, required in production (`CRM_ENCRYPTION_KEYS`) |
++| Secrets never logged/returned | `app/core/config.py:validate_security()` + billing/CRM secret handling |
++| Tenant isolation (cross-tenant access is attacked in tests) | `tests/test_tenant_isolation.py`, `tests/test_crm_tenant_isolation.py`, `tests/test_knowledge_tenant_isolation.py` |
++| Recording disclosure to callers | `Tenant.recording_disclaimer` (`app/db/models.py:216`) |
++| Transcript sharing opt-in | `Tenant.share_transcripts` default `False` (`app/db/models.py:950`) |
++| Full audit log | `AuditEvent` with `ix_audit_tenant_time` index (`app/db/models.py`) |
++| Data retention | `CALL_RETENTION_DAYS` (default 365) + pure policy in `app/core/data_policy.py` (`retention_cutoff`, `is_expired`) |
++
++**Operator:** sign a BAA where a buyer requires it; run the retention deletion
++on a schedule (see below). Healthcare buyers will also ask for a SOC 2 or
++penetration test — that is a services engagement, not a code change.
++
++## 5. Data retention & deletion
++
++`app/core/data_policy.py` defines the policy:
++
++- `retention_cutoff(days)` → the timestamp boundary
++- `is_expired(created_at, days)` → whether a record is past retention
++
++Wiring the deletion loop into `scripts/scheduler.py` (a daily job that deletes
++`Call`/`Turn` rows and expunges `recording_url` objects older than the cutoff)
++is the remaining operational step, and is deliberately left to the deploy step
++because it mutates production data and should be enabled with a review of
++backup policy. The policy math is fully tested (`tests/test_data_policy.py`).
++
++## 6. Buyer-ready one-liner
++
++> VoxDesk enforces per-tenant calling windows, do-not-call and retry backoff
++> (TCPA), blocks non-compliant SMS content and drives Twilio Trust Hub (A2P
++> 10DLC), flags greetings that fail AI-agent disclosure (EU AI Act), and ships
++> encryption-at-rest, tenant isolation, audit logging and a configurable
++> retention policy for healthcare-style buyers.
+diff --git a/docs/PERFORMANCE.md b/docs/PERFORMANCE.md
+new file mode 100644
+index 0000000..f178fb5
+--- /dev/null
++++ b/docs/PERFORMANCE.md
+@@ -0,0 +1,63 @@
++# VoxDesk — Performance & scale
++
++## Latency budgets (voice path)
++
++A caller on the phone will not wait. These budgets are enforced as timeouts in
++code — a provider that misses them fails fast instead of hanging the call.
++
++| Operation | Budget | Enforced at |
++|---|---|---|
++| Knowledge retrieval on a live call | 1.5 s hard ceiling | `KNOWLEDGE_RETRIEVAL_TIMEOUT_SECONDS` (`app/core/config.py`) |
++| Calendar availability lookup | 3.0 s | `CALENDAR_VOICE_TIMEOUT_SECONDS` |
++| Calendar provider call (general) | 6.0 s | `CALENDAR_REQUEST_TIMEOUT_SECONDS` |
++| CRM provider call | 10.0 s | `CRM_REQUEST_TIMEOUT_SECONDS` |
++| Embedding call | 20.0 s | `KNOWLEDGE_EMBEDDING_TIMEOUT_SECONDS` |
++| Billing provider call | 15.0 s | `BILLING_REQUEST_TIMEOUT_SECONDS` |
++
++## Guard-rail tests
++
++- `tests/test_knowledge_performance.py` — extraction/chunking/retrieval ceilings
++- `tests/test_performance_smoke.py` — bcrypt cost, stream-token mint/verify,
++  SMS segment counting, retention math
++
++These are **complexity tripwires**, not benchmarks: ceilings are several times
++the observed median so a busy CI box doesn't cause flaky failures. A failure
++means an accidental O(n²) or a cost regression, and should be investigated.
++
++## Load testing
++
++Tooling ships in `loadtest/` (Locust). Start the API, then:
++
++```bash
++pip install locust
++locust -f loadtest/locustfile.py --host http://localhost:8000
++# open http://localhost:8089, pick users/spawn rate, start
++```
++
++The default tasks hit `/health`, `/health/ready` and an API-404 invariant. To
++exercise authenticated traffic, add a task that logs in (`POST /auth/login`)
++and replays the `Authorization` header against `/api/tenants/…` reads.
++
++What to watch:
++- p50/p95 latency of `/health/ready` (DB round trip + `SELECT 1`)
++- error rate on `/api/*` (should be 401/403/404, never 500)
++- worker CPU/memory under load
++
++## Scaling up
++
++| Axis | How |
++|---|---|
++| API workers | `WEB_CONCURRENCY` env → `--workers` in `scripts/entrypoint.sh` (per-CPU) |
++| DB connections | `pool_size`/`max_overflow` in `app/db/session.py`; scale vertically first, then read replicas |
++| Scheduler | single process by design (one worker, not a distributed system — see `scripts/scheduler.py` header); run exactly one replica, its loops are idempotent and self-healing |
++| Static dashboard | served by the API process (StaticFiles); move behind a CDN for multi-region |
++| Voice media | WebSocket terminates on the API pod; a sticky LB (source-IP or call-SID) keeps a call on one worker for its lifetime |
++
++## Known limits (be honest with buyers)
++
++- No horizontal DB sharding; single primary Postgres. Fine to a comfortable
++  multi-hundred-concurrent-call scale; beyond that, split the voice/media tier
++  from the API tier.
++- No multi-region deployment; latency to your primary region is your floor.
++- `--workers N` runs the idempotent plan seed per worker at startup — safe by
++  design, but avoid very high worker counts until it is profiled.
+diff --git a/loadtest/README.md b/loadtest/README.md
+new file mode 100644
+index 0000000..d4b517a
+--- /dev/null
++++ b/loadtest/README.md
+@@ -0,0 +1,44 @@
++# Load testing VoxDesk
++
++Locust-based load tests. Run against a deployed API:
++
++```bash
++pip install locust
++# local compose:
++locust -f loadtest/locustfile.py --host http://localhost:8000
++# staging (replace with your host):
++locust -f loadtest/locustfile.py --host https://staging.example.com
++```
++
++Then open the web UI (default http://localhost:8089), choose the number of
++users and spawn rate, and start.
++
++Headless (CI or quick run):
++
++```bash
++locust -f loadtest/locustfile.py --host http://localhost:8000 \
++  --headless -u 100 -r 10 -t 60s
++```
++
++## What it exercises
++
++| Task | Weight | Purpose |
++|---|---|---|
++| `GET /health` | 3 | Process liveness under concurrency |
++| `GET /health/ready` | 2 | DB round trip; 503 = scale/repair signal |
++| `GET /api/loadtest-probe` → 404 | 1 | SPA fallback must never swallow API paths |
++
++## Extending (authenticated traffic)
++
++Add a task that logs in once per user and reuses the access token:
++
++```python
++@task
++def authenticated_read(self):
++    r = self.client.post("/auth/login", json={"email": "...", "password": "..."})
++    token = r.json().get("access_token")
++    if token:
++        self.client.get("/api/tenants", headers={"Authorization": f"Bearer {token}"})
++```
++
++See docs/PERFORMANCE.md for the latency budgets these runs should validate.
+diff --git a/loadtest/locustfile.py b/loadtest/locustfile.py
+new file mode 100644
+index 0000000..73e9979
+--- /dev/null
++++ b/loadtest/locustfile.py
+@@ -0,0 +1,39 @@
++"""
++Locust load test for VoxDesk.
++
++Run against a deployed API (local compose or staging):
++
++    pip install locust
++    locust -f loadtest/locustfile.py --host http://localhost:8000
++
++Then open http://localhost:8089 and start a run. The default tasks hit the
++unauthenticated liveness/readiness probes; a load test that only exercises
++public endpoints proves the process does not fall over under concurrency, which
++is the first thing to validate before adding authenticated traffic.
++
++See docs/PERFORMANCE.md for the full runbook and latency budgets.
++"""
++from __future__ import annotations
++
++from locust import HttpUser, between, task
++
++
++class VoxDeskUser(HttpUser):
++    wait_time = between(0.5, 2.0)
++
++    @task(3)
++    def liveness(self):
++        # Process is up and answering.
++        self.client.get("/health", name="health")
++
++    @task(2)
++    def readiness(self):
++        # DB answers. A 503 here is the signal to scale/repair, not a crash.
++        self.client.get("/health/ready", name="health/ready")
++
++    @task(1)
++    def unknown_api_returns_404(self):
++        # SPA fallback must never swallow API paths -- cheap invariant check.
++        with self.client.get("/api/loadtest-probe", catch_response=True) as resp:
++            if resp.status_code != 404:
++                resp.failure(f"expected 404, got {resp.status_code}")
+diff --git a/tests/test_data_policy.py b/tests/test_data_policy.py
+new file mode 100644
+index 0000000..2a0050d
+--- /dev/null
++++ b/tests/test_data_policy.py
+@@ -0,0 +1,89 @@
++"""
++Step 9 compliance — data retention and AI-disclosure policy.
++
++Pure-policy tests: no database, no network, deterministic. These pin the two
++regulatory obligations codified in app/core/data_policy.py.
++"""
++from __future__ import annotations
++
++from datetime import datetime, timedelta, timezone
++
++from app.core.data_policy import (
++    ai_disclosure_compliant,
++    ai_disclosure_present,
++    compliance_summary,
++    is_expired,
++    retention_cutoff,
++)
++
++
++# -------------------------------------------------------------- retention ---
++
++def test_cutoff_is_now_minus_days():
++    now = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
++    assert retention_cutoff(30, now=now) == now - timedelta(days=30)
++
++
++def test_days_are_never_below_one():
++    now = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
++    assert retention_cutoff(0, now=now) == now - timedelta(days=1)
++    assert retention_cutoff(-5, now=now) == now - timedelta(days=1)
++
++
++def test_recent_record_is_not_expired():
++    now = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
++    recent = now - timedelta(days=10)
++    assert is_expired(recent, retention_days=30, now=now) is False
++
++
++def test_old_record_is_expired():
++    now = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
++    old = now - timedelta(days=31)
++    assert is_expired(old, retention_days=30, now=now) is True
++
++
++def test_naive_utc_timestamp_is_treated_as_utc():
++    # The codebase stores naive UTC via datetime.utcnow(); a record exactly on
++    # the cutoff boundary must not be deleted.
++    now = datetime(2026, 9, 11, 12, 0, tzinfo=timezone.utc)
++    boundary = now - timedelta(days=30)
++    assert is_expired(boundary, retention_days=30, now=now) is False
++
++
++# ------------------------------------------------------------ disclosure ---
++
++def test_disclosure_recognises_automated_greeting():
++    assert ai_disclosure_present(
++        "Thanks for calling Bright Smile Dental, this is Alex, our virtual AI assistant. How can I help?"
++    ) is True
++
++
++def test_disclosure_missing_in_human_sounding_greeting():
++    assert ai_disclosure_present(
++        "Thanks for calling Bright Smile Dental, this is Alex. How can I help?"
++    ) is False
++
++
++def test_disclosure_is_case_insensitive():
++    assert ai_disclosure_present("You are speaking to an AI agent.") is True
++
++
++def test_disclosure_not_required_means_compliant_regardless():
++    assert ai_disclosure_compliant("Hello, this is Alex.", required=False) is True
++
++
++def test_disclosure_required_flags_missing_disclosure():
++    assert ai_disclosure_compliant("Hello, this is Alex.", required=True) is False
++    assert ai_disclosure_compliant("Hello, this is our AI assistant.", required=True) is True
++
++
++def test_compliance_summary_shape():
++    summary = compliance_summary(
++        greeting="Thanks for calling, this is our virtual assistant.",
++        disclosure_required=True,
++    )
++    assert summary == {
++        "ai_disclosure_required": True,
++        "ai_disclosure_present": True,
++        "compliant": True,
++    }
+diff --git a/tests/test_performance_smoke.py b/tests/test_performance_smoke.py
+new file mode 100644
+index 0000000..5c27877
+--- /dev/null
++++ b/tests/test_performance_smoke.py
+@@ -0,0 +1,69 @@
++"""
++Step 9 scale/performance — hot-path guard rails.
++
++These are guard rails, not a benchmark suite, and they follow the same
++philosophy as tests/test_knowledge_performance.py: the ceilings are several
++times the observed median so a busy CI box does not cause flaky failures. What
++they catch is a change of *complexity* -- an accidental O(n^2), a hash cost
++bumped to production cost in a hot loop, a serializer that suddenly copies the
++whole call history.
++
++Run with `-s` to see the measured timings.
++"""
++from __future__ import annotations
++
++import statistics
++import time
++
++from app.auth import password as pw
++from app.core.compliance import count_segments
++from app.core.data_policy import retention_cutoff
++from app.telephony.stream_auth import create_stream_token, verify_stream_token
++
++
++def _median_ms(fn, runs: int = 5) -> float:
++    samples = []
++    for _ in range(runs):
++        started = time.perf_counter()
++        fn()
++        samples.append((time.perf_counter() - started) * 1000)
++    return statistics.median(samples)
++
++
++def _report(capsys, label: str, ms: float, ceiling: float) -> None:
++    with capsys.disabled():
++        print(f"\n    {label:<40} {ms:8.2f} ms   (ceiling {ceiling:.0f} ms)")
++
++
++def test_password_hash_cost_stays_bounded(capsys):
++    """Hashing must never blow past a sane ceiling; at default cost this is
++    ~250ms, and a hot-loop mistake would make it several times that."""
++    ms = _median_ms(lambda: pw.hash_password("Correct-Horse-Battery-9!"), runs=3)
++    _report(capsys, "bcrypt hash (1x)", ms, 2000)
++    assert ms < 2000
++
++
++def test_stream_token_round_trip_is_fast(capsys):
++    """The signed WebSocket token is minted per call -- it must stay cheap."""
++
++    def round_trip():
++        token = create_stream_token("CA-perf")
++        assert verify_stream_token("CA-perf", token) is True
++
++    ms = _median_ms(round_trip, runs=50)
++    _report(capsys, "stream token mint+verify", ms, 5)
++    assert ms < 5
++
++
++def test_message_segment_counting_is_fast(capsys):
++    body = "Your appointment is confirmed. " * 40
++
++    ms = _median_ms(lambda: count_segments(body), runs=20)
++    _report(capsys, "SMS segment count (~1k chars)", ms, 10)
++    assert ms < 10
++
++
++def test_retention_cutoff_math_is_constant_time(capsys):
++    ms = _median_ms(lambda: retention_cutoff(365), runs=100)
++    _report(capsys, "retention cutoff", ms, 1)
++    assert ms < 1
+-- 
+2.47.3
+

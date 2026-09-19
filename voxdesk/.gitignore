@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+secrets/
+recordings/
+node_modules/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Database dumps and backup artifacts: they contain the whole business,
+# calls and PII included, and must never be committable even by accident.
+backups/
+*.dump
+*.pem
+*.key
+.netrc
+
+# Local tooling state.
+.idea/
+.vscode/
+*.swp
+
+# Realtime gateway build artifacts (Go test/build run from the repo tree).
+/services/realtime/gateway-go/gateway

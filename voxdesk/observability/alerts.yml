@@ -1,0 +1,104 @@
+# VoxDesk alerts — minimal, high-value only.
+#
+# Every alert carries a `runbook` annotation pointing at the matching section
+# of docs/SLO-ALERTS.md, which states the condition, the severity rationale,
+# and the suggested operator actions. No alert here is informational noise:
+# each one means "a human should look at this now".
+groups:
+  - name: voxdesk
+    rules:
+      - alert: VoxDeskInstanceDown
+        expr: up{job="voxdesk-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "VoxDesk API is down"
+          description: "The API instance has been unreachable for 2 minutes."
+          runbook: "docs/SLO-ALERTS.md#voxdeskinstancedown"
+
+      - alert: VoxDeskSchedulerDown
+        expr: up{job="voxdesk-scheduler"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "VoxDesk background worker is down"
+          description: "The scheduler (reminders, campaigns, CRM sync, billing reconciliation, retention) is unreachable. Calls still work; side effects stop flowing."
+          runbook: "docs/SLO-ALERTS.md#voxdeskschedulerdown"
+
+      - alert: VoxDeskDatabaseDown
+        expr: voxdesk_db_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "VoxDesk database is unreachable"
+          description: "The readiness probe reports the database is down."
+          runbook: "docs/SLO-ALERTS.md#voxdeskdatabasedown"
+
+      - alert: VoxDeskHighErrorRate
+        expr: |
+          sum(rate(voxdesk_http_requests_total{status=~"5.."}[5m]))
+            /
+          clamp_min(sum(rate(voxdesk_http_requests_total[5m])), 0.0001) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High 5xx rate"
+          description: "More than 5% of requests are failing over 5 minutes."
+          runbook: "docs/SLO-ALERTS.md#voxdeskhigherrorrate"
+
+      - alert: VoxDeskSlowP95
+        expr: histogram_quantile(0.95, rate(voxdesk_http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 latency above 2s"
+          description: "The 95th-percentile request latency exceeds 2 seconds."
+          runbook: "docs/SLO-ALERTS.md#voxdeskslowp95"
+
+      - alert: VoxDeskCallFailureRate
+        expr: |
+          sum(rate(voxdesk_calls_total{outcome="failed"}[10m]))
+            /
+          clamp_min(sum(rate(voxdesk_calls_total[10m])), 0.0001) > 0.3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High call failure rate"
+          description: "More than 30% of finished calls failed over 10 minutes. Check provider errors and the media-stream logs (correlation: call_sid)."
+          runbook: "docs/SLO-ALERTS.md#voxdeskcallfailurerate"
+
+      - alert: VoxDeskProviderErrorBurst
+        expr: increase(voxdesk_provider_errors_total[10m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Provider error burst"
+          description: "More than 10 voice-provider (STT/TTS/LLM) errors in 10 minutes. Group by provider/category on the dashboard."
+          runbook: "docs/SLO-ALERTS.md#voxdeskprovidererrorburst"
+
+      - alert: VoxDeskStuckSideEffects
+        expr: sum(voxdesk_stuck_side_effects) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Stuck external side effects"
+          description: "Reminders, CRM syncs or document ingestions are stuck in-flight past their recovery window. The reapers should have recovered them; investigate the worker."
+          runbook: "docs/SLO-ALERTS.md#voxdeskstucksideeffects"
+
+      - alert: VoxDeskJobStale
+        expr: time() - voxdesk_job_last_success_timestamp_seconds{job=~"reminders|campaigns|crm_sync|knowledge"} > 3600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scheduler job has not succeeded recently"
+          description: "A frequent scheduler loop (reminders/campaigns/crm_sync/knowledge) has not completed successfully in over an hour."
+          runbook: "docs/SLO-ALERTS.md#voxdeskjobstale"

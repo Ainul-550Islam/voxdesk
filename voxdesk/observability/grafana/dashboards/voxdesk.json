@@ -1,0 +1,197 @@
+{
+  "title": "VoxDesk Overview",
+  "uid": "voxdesk-overview",
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "15s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request rate",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "voxdesk-prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(voxdesk_http_requests_total[5m]))",
+          "legendFormat": "req/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "5xx errors",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "voxdesk-prometheus" },
+      "targets": [
+        {
+          "expr": "sum(rate(voxdesk_http_requests_total{status=~\"5..\"}[5m]))",
+          "legendFormat": "5xx/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "p95 latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "voxdesk-prometheus" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(voxdesk_http_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95 s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Database up",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "voxdesk-prometheus" },
+      "targets": [{ "expr": "voxdesk_db_up", "legendFormat": "db", "refId": "A" }]
+    },
+    {
+      "id": 5,
+      "title": "Active calls",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "voxdesk-prometheus" },
+      "targets": [
+        { "expr": "voxdesk_active_calls", "legendFormat": "calls", "refId": "A" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Redis up",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "voxdesk-prometheus" },
+      "targets": [
+        { "expr": "voxdesk_redis_up", "legendFormat": "redis", "refId": "A" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Availability (5m, SLO)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "voxdesk-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit" } },
+      "targets": [
+        {
+          "expr": "voxdesk:slo:availability:5m",
+          "legendFormat": "availability",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Provider errors",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "voxdesk-prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (provider) (rate(voxdesk_provider_errors_total[5m]))",
+          "legendFormat": "{{provider}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Call outcomes",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "voxdesk-prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(voxdesk_calls_total[10m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "LLM tokens by provider",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "voxdesk-prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (provider) (rate(voxdesk_llm_tokens_total[5m]))",
+          "legendFormat": "{{provider}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Provider cost (known, USD)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "voxdesk-prometheus" },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" } },
+      "targets": [
+        {
+          "expr": "sum by (resource) (rate(voxdesk_cost_usd_total[5m]))",
+          "legendFormat": "{{resource}} $/s",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Unpriced consumption (UNKNOWN)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "datasource": { "type": "prometheus", "uid": "voxdesk-prometheus" },
+      "targets": [
+        {
+          "expr": "sum by (resource) (rate(voxdesk_cost_unknown_total[5m]))",
+          "legendFormat": "{{resource}} units/s (unpriced)",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Scheduler jobs since last success (s)",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "datasource": { "type": "prometheus", "uid": "voxdesk-prometheus" },
+      "targets": [
+        {
+          "expr": "time() - voxdesk_job_last_success_timestamp_seconds",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "{{job}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Stuck side effects",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "voxdesk-prometheus" },
+      "targets": [
+        {
+          "expr": "sum(voxdesk_stuck_side_effects)",
+          "legendFormat": "stuck",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+{"type":"delivery","room":"calls","kind":"call.updated","payload":{"call_id":"call-42","state":"active"},"event_id":"bbbbbbbb-2222-2222-2222-bbbbbbbbbbbb","sent_at":"2026-01-02T03:04:05Z"}

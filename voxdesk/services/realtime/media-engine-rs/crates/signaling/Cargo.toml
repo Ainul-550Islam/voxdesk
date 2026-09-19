@@ -1,0 +1,11 @@
+[package]
+name = "signaling"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+protocol = { path = "../protocol" }
+routing = { path = "../routing" }
+sessions = { path = "../sessions" }
+webrtc = { path = "../webrtc" }

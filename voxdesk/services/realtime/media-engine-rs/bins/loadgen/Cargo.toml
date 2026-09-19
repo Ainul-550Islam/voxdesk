@@ -1,0 +1,17 @@
+[package]
+name = "loadgen"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "loadgen"
+path = "src/main.rs"
+
+[dependencies]
+engine = { path = "../../crates/engine" }
+media = { path = "../../crates/media" }
+streams = { path = "../../crates/streams" }
+transport = { path = "../../crates/transport" }
+webrtc = { path = "../../crates/webrtc" }
+protocol = { path = "../../crates/protocol" }

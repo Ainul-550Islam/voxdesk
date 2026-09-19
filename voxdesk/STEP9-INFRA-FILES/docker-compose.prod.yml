@@ -1,0 +1,60 @@
+# Production compose: no source bind-mounts, no --reload, explicit healthchecks
+# and a persistent knowledge volume. The dev compose (docker-compose.yml) keeps
+# hot-reload and bind mounts for local iteration.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Requires a .env next to this file (see .env.example): APP_ENV=production,
+# JWT_SECRET, SECRET_KEY, TWILIO_*, at least one LLM key, ELEVENLABS_API_KEY,
+# DEEPGRAM_API_KEY, CRM_ENCRYPTION_KEYS, and a real embedding provider.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-voxdesk}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-voxdesk}
+      POSTGRES_DB: ${POSTGRES_DB:-voxdesk}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-voxdesk}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-voxdesk}:${POSTGRES_PASSWORD:-voxdesk}@db:5432/${POSTGRES_DB:-voxdesk}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./secrets:/srv/secrets:ro
+      - knowledge:/srv/var/knowledge
+    depends_on:
+      db:
+        condition: service_healthy
+
+  scheduler:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-voxdesk}:${POSTGRES_PASSWORD:-voxdesk}@db:5432/${POSTGRES_DB:-voxdesk}
+    # Same image as the API, but run the background worker instead of the
+    # entrypoint (no uvicorn, no migrations -- the API already migrated).
+    entrypoint: ["python", "-m", "scripts.scheduler"]
+    volumes:
+      - ./secrets:/srv/secrets:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+volumes:
+  pgdata:
+  knowledge:

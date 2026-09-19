@@ -1,0 +1,40 @@
+# VoxDesk SLO measurement (Step 7 observability).
+#
+# These are *recording rules*, not alerts: they turn the raw counters into
+# the two numbers an operator watches against their SLO targets —
+# availability and error budget — so "are we meeting our SLO?" is one query,
+# not a spreadsheet.
+#
+# The availability SLO is process-level HTTP availability (the standard
+# definition): 1 - (5xx / total). It deliberately does NOT count 4xx (a 404
+# is correct behaviour, not a miss) and it does not count call-level outcomes,
+# which have their own signals in `voxdesk_calls_total`. Targets live in
+# docs/SLO-ALERTS.md; these rules only measure.
+#
+# `:30d` windows are only meaningful after 30 days of retained data — before
+# that they read optimistically high (early periods have no errors yet).
+groups:
+  - name: voxdesk-slo
+    interval: 1m
+    rules:
+      - record: voxdesk:slo:http_requests:rate5m
+        expr: sum(rate(voxdesk_http_requests_total[5m]))
+
+      - record: voxdesk:slo:http_errors:rate5m
+        expr: sum(rate(voxdesk_http_requests_total{status=~"5.."}[5m]))
+
+      - record: voxdesk:slo:availability:5m
+        expr: |
+          1 - (
+            sum(rate(voxdesk_http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(voxdesk_http_requests_total[5m])), 0.0001)
+          )
+
+      - record: voxdesk:slo:availability:30d
+        expr: |
+          1 - (
+            sum(increase(voxdesk_http_requests_total{status=~"5.."}[30d]))
+            /
+            clamp_min(sum(increase(voxdesk_http_requests_total[30d])), 0.0001)
+          )

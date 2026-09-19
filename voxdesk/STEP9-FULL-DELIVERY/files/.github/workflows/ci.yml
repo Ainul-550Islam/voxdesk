@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (lint + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Lint (ruff — fatal rules)
+        # Blocks on genuinely broken code (syntax, undefined names). The full
+        # `ruff check app scripts tests` is the Makefile target; it currently
+        # reports 18 pre-existing cosmetic violations (unused imports, an
+        # ambiguous `l` loop variable, one duplicated test name) that should be
+        # cleared in a dedicated cleanup pass before enabling the full gate.
+        run: ruff check app scripts tests --select E9,F63,F7,F82
+      - name: Backend tests
+        run: python -m pytest tests/ -q
+
+  migrations:
+    name: PostgreSQL migration smoke test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: voxdesk
+          POSTGRES_PASSWORD: voxdesk
+          POSTGRES_DB: voxdesk
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U voxdesk"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://voxdesk:voxdesk@localhost:5432/voxdesk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      # Alembic is the sole schema owner in production. These two steps prove
+      # the revision chain builds on a real Postgres and can be torn down and
+      # rebuilt from nothing -- the gap that used to hide SQLite-only DDL bugs.
+      - name: Apply all migrations
+        run: alembic upgrade head
+      - name: Downgrade to base and re-upgrade (round trip)
+        run: alembic downgrade base && alembic upgrade head
+
+  frontend:
+    name: Frontend (tests + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Frontend tests
+        run: npm run test
+      - name: Production build
+        run: npm run build

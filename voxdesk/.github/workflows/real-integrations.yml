@@ -1,0 +1,47 @@
+name: real-integrations
+
+# Real external-provider tests (Twilio, Deepgram, ElevenLabs, LLM keys,
+# Stripe test mode). These are NEVER part of the default CI path: they cost
+# money, need live credentials, and their flakiness must not gate normal
+# development. Run them manually before a release or when touching a provider
+# client. The tests themselves double-check the opt-in flag and skip without
+# it, so even a misfire of this workflow is inert.
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why this run (e.g. 'pre-release', 'twilio webhook refactor')
+        required: false
+        default: manual check
+
+jobs:
+  real-providers:
+    runs-on: ubuntu-latest
+    environment: real-provider-tests     # hold the secrets behind a GitHub environment
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio aiosqlite httpx
+
+      # ONLY the marked tests: `-m real_provider`, guarded again by the
+      # environment switch the tests themselves require.
+      - name: Real-provider suite
+        run: python -m pytest -q -m real_provider
+        env:
+          VOXDESK_REAL_INTEGRATION: "1"
+          TWILIO_ACCOUNT_SID: ${{ secrets.REAL_TEST_TWILIO_ACCOUNT_SID }}
+          TWILIO_AUTH_TOKEN: ${{ secrets.REAL_TEST_TWILIO_AUTH_TOKEN }}
+          TWILIO_PHONE_NUMBER: ${{ secrets.REAL_TEST_TWILIO_PHONE_NUMBER }}
+          DEEPGRAM_API_KEY: ${{ secrets.REAL_TEST_DEEPGRAM_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.REAL_TEST_ELEVENLABS_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.REAL_TEST_OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.REAL_TEST_ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.REAL_TEST_GOOGLE_API_KEY }}

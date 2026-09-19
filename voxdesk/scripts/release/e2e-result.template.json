@@ -1,0 +1,18 @@
+{
+  "title": "VoxDesk manual real-telephony E2E result (Step 11)",
+  "notes": "Human-executed only. Copy this file to var/release/e2e-result.json after a genuinely operator-triggered live call and fill every field. scripts/release_gate.py reads var/release/e2e-result.json; it will NOT dial, will NOT pass without all required fields, and treats any value other than PASS as not-run (FAIL is recorded as FAIL). Keep this template at NOT_EXECUTED until the call actually happened.",
+  "result": "NOT_EXECUTED",
+  "test_date": "",
+  "test_tenant_id": "",
+  "test_number": "",
+  "operator": "",
+  "call_id": "",
+  "twilio_call_sid": "",
+  "direction": "inbound",
+  "agent": "",
+  "pre_call_checks": [],
+  "call_observations": [],
+  "post_call_checks": [],
+  "failures": [],
+  "signed_off_by": ""
+}

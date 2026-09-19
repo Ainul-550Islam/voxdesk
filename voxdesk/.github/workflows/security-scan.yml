@@ -1,0 +1,57 @@
+name: security-scan
+
+# Supply-chain and static analysis. Runs alongside CI on every push/PR and
+# weekly on a schedule (dependency CVEs appear after a commit, not at it).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  sast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # SAST: bandit only scans our code (app/, scripts/) — never vendored
+      # dependencies, so it stays fast and actionable.
+      - name: Bandit (Python SAST)
+        run: |
+          pip install bandit
+          bandit -r app scripts -q
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pip-audit with the documented accepted-risk list: the script is the
+      # single source of truth for WHICH findings are accepted and why
+      # (docs/SECURITY.md), so CI and `make`-less local runs agree.
+      - name: pip-audit (Python dependency CVEs)
+        run: |
+          pip install pip-audit
+          bash scripts/audit_dependencies.sh
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      # gitleaks with full history: a secret deleted in a later commit is
+      # still a leaked secret.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_ENABLE_COMMENTS: "true"

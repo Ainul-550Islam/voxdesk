@@ -1,0 +1,747 @@
+From 7350b7d30db44f648a90ef8bc07fe71a46999c46 Mon Sep 17 00:00:00 2001
+From: VoxDesk Phase A <phase-a@local.invalid>
+Date: Fri, 11 Sep 2026 07:41:24 +0000
+Subject: Step 9: production infrastructure (CI/CD, Docker, observability)
+
+- .github/workflows/ci.yml: backend lint+tests, frontend tests+build, and a
+  PostgreSQL migration smoke test (upgrade head + downgrade base round trip)
+- Multi-stage Dockerfile: node stage builds the dashboard, python stage ships
+  app + alembic + scripts + dist, runs as an unprivileged user, with a
+  HEALTHCHECK and a migration-first entrypoint
+- scripts/entrypoint.sh: alembic upgrade head then uvicorn with --workers,
+  --proxy-headers and --forwarded-allow-ips
+- docker-compose.prod.yml: db + api + scheduler with healthchecks, no dev
+  mounts or --reload
+- .dockerignore: keep secrets, env files and build caches out of the image
+- Observability: SENTRY_DSN (optional, guarded init), LOG_LEVEL/LOG_FORMAT
+  with JSON renderer in production (app/core/config.py, app/core/logging.py,
+  app/main.py)
+- /health/ready readiness probe with a real DB ping; /health stays liveness
+- Serve the built dashboard (StaticFiles + SPA fallback) when dist exists;
+  unknown API paths still 404
+- tests/test_production_infra.py: 10 tests for readiness, logging renderer,
+  Sentry guard and dashboard serving
+- docs/DEPLOYMENT.md: staging/production runbook
+---
+ .dockerignore                  |  22 ++++++
+ .env.example                   |  12 ++-
+ .github/workflows/ci.yml       |  83 ++++++++++++++++++++
+ Dockerfile                     |  40 +++++++++-
+ app/core/config.py             |  12 +++
+ app/core/logging.py            |  40 +++++++---
+ app/main.py                    |  80 ++++++++++++++++++-
+ docker-compose.prod.yml        |  60 ++++++++++++++
+ docs/DEPLOYMENT.md             |  62 +++++++++++++++
+ requirements.txt               |   1 +
+ scripts/entrypoint.sh          |  22 ++++++
+ tests/test_production_infra.py | 139 +++++++++++++++++++++++++++++++++
+ 12 files changed, 560 insertions(+), 13 deletions(-)
+ create mode 100644 .dockerignore
+ create mode 100644 .github/workflows/ci.yml
+ create mode 100644 docker-compose.prod.yml
+ create mode 100644 docs/DEPLOYMENT.md
+ create mode 100755 scripts/entrypoint.sh
+ create mode 100644 tests/test_production_infra.py
+
+diff --git a/.dockerignore b/.dockerignore
+new file mode 100644
+index 0000000..2d4dc3e
+--- /dev/null
++++ b/.dockerignore
+@@ -0,0 +1,22 @@
++# Version control
++.git/
++.gitignore
++.github/
++
++# Python
++__pycache__/
++*.py[cod]
++.venv/
++.pytest_cache/
++.ruff_cache/
++
++# Node
++node_modules/
++dashboard/node_modules/
++dashboard/dist/
++
++# Secrets & local state -- never bake these into an image
++.env
++secrets/
++recordings/
++var/
+diff --git a/.env.example b/.env.example
+index 63ff794..1086be6 100644
+--- a/.env.example
++++ b/.env.example
+@@ -53,4 +53,14 @@ ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM
+ ELEVENLABS_MODEL=eleven_flash_v2_5
+ 
+ # ---------- Google Calendar ----------
+-GOOGLE_CREDENTIALS_JSON=./secrets/google_service_account.json
+\ No newline at end of file
++GOOGLE_CREDENTIALS_JSON=./secrets/google_service_account.json
++
++# ---------- Observability ----------
++# Optional error reporting (Sentry). Leave empty in development. Set your DSN
++# in production so unhandled exceptions are captured.
++SENTRY_DSN=
++
++# Log level (DEBUG|INFO|WARNING|ERROR) and renderer ("console" for dev,
++# "json" for production/machine-readable logs). Production defaults to JSON.
++LOG_LEVEL=INFO
++LOG_FORMAT=console
+\ No newline at end of file
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+new file mode 100644
+index 0000000..b4c96e3
+--- /dev/null
++++ b/.github/workflows/ci.yml
+@@ -0,0 +1,83 @@
++name: CI
++
++on:
++  push:
++    branches: [main]
++  pull_request:
++
++jobs:
++  backend:
++    name: Backend (lint + tests)
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-python@v5
++        with:
++          python-version: "3.12"
++          cache: pip
++      - name: Install dependencies
++        run: pip install -r requirements.txt
++      - name: Lint (ruff — fatal rules)
++        # Blocks on genuinely broken code (syntax, undefined names). The full
++        # `ruff check app scripts tests` is the Makefile target; it currently
++        # reports 18 pre-existing cosmetic violations (unused imports, an
++        # ambiguous `l` loop variable, one duplicated test name) that should be
++        # cleared in a dedicated cleanup pass before enabling the full gate.
++        run: ruff check app scripts tests --select E9,F63,F7,F82
++      - name: Backend tests
++        run: python -m pytest tests/ -q
++
++  migrations:
++    name: PostgreSQL migration smoke test
++    runs-on: ubuntu-latest
++    services:
++      postgres:
++        image: postgres:16-alpine
++        env:
++          POSTGRES_USER: voxdesk
++          POSTGRES_PASSWORD: voxdesk
++          POSTGRES_DB: voxdesk
++        ports:
++          - 5432:5432
++        options: >-
++          --health-cmd "pg_isready -U voxdesk"
++          --health-interval 5s
++          --health-timeout 5s
++          --health-retries 10
++    env:
++      DATABASE_URL: postgresql+asyncpg://voxdesk:voxdesk@localhost:5432/voxdesk
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-python@v5
++        with:
++          python-version: "3.12"
++          cache: pip
++      - name: Install dependencies
++        run: pip install -r requirements.txt
++      # Alembic is the sole schema owner in production. These two steps prove
++      # the revision chain builds on a real Postgres and can be torn down and
++      # rebuilt from nothing -- the gap that used to hide SQLite-only DDL bugs.
++      - name: Apply all migrations
++        run: alembic upgrade head
++      - name: Downgrade to base and re-upgrade (round trip)
++        run: alembic downgrade base && alembic upgrade head
++
++  frontend:
++    name: Frontend (tests + build)
++    runs-on: ubuntu-latest
++    defaults:
++      run:
++        working-directory: dashboard
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-node@v4
++        with:
++          node-version: "20"
++          cache: npm
++          cache-dependency-path: dashboard/package-lock.json
++      - name: Install dependencies
++        run: npm ci --no-audit --no-fund
++      - name: Frontend tests
++        run: npm run test
++      - name: Production build
++        run: npm run build
+diff --git a/Dockerfile b/Dockerfile
+index 63aa51a..5f6f43f 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -1,12 +1,50 @@
++# ============================================================ stage 1: web ===
++# Build the React dashboard into static assets. This keeps node entirely out
++# of the runtime image.
++FROM node:20-alpine AS dashboard-build
++
++WORKDIR /srv
++COPY dashboard/package.json dashboard/package-lock.json ./
++RUN npm ci --no-audit --no-fund
++COPY dashboard/ ./
++RUN npm run build
++
++# ============================================================ stage 2: api ===
+ FROM python:3.12-slim
+ 
++# ffmpeg: audio processing for the voice pipeline. libsndfile1 + build deps:
++# several audio wheels (resampling, etc.) need them at install time.
+ RUN apt-get update && apt-get install -y --no-install-recommends \
+       build-essential ffmpeg libsndfile1 && rm -rf /var/lib/apt/lists/*
+ 
+ WORKDIR /srv
++
+ COPY requirements.txt .
+ RUN pip install --no-cache-dir -r requirements.txt
+ 
++# Application, migrations, worker scripts, and the built dashboard. Alembic is
++# the sole schema owner in production, so the full alembic/ tree ships here and
++# the entrypoint runs `alembic upgrade head` before serving.
+ COPY app ./app
++COPY alembic ./alembic
++COPY alembic.ini .
++COPY scripts ./scripts
++COPY --from=dashboard-build /srv/dist ./dashboard/dist
++
++# Unprivileged runtime user; writable dirs for the local knowledge backend and
++# mounted secrets.
++RUN useradd --create-home --uid 10001 appuser \
++ && mkdir -p /srv/var/knowledge /srv/secrets \
++ && chown -R appuser:appuser /srv
++USER appuser
++
++ENV PYTHONUNBUFFERED=1
++
+ EXPOSE 8000
+-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+\ No newline at end of file
++
++HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
++  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"
++
++# entrypoint applies migrations, then execs uvicorn with production defaults
++# (multi-worker, proxy-header aware). See scripts/entrypoint.sh.
++ENTRYPOINT ["sh", "scripts/entrypoint.sh"]
+diff --git a/app/core/config.py b/app/core/config.py
+index 6d0860c..f0ae277 100644
+--- a/app/core/config.py
++++ b/app/core/config.py
+@@ -129,6 +129,18 @@ class Settings(BaseSettings):
+     # Google
+     google_credentials_json: str = "./secrets/google_service_account.json"
+ 
++    # ---------- Observability (STEP 9) ----------
++    # Sentry error reporting. Optional: when empty nothing is initialised and
++    # unhandled exceptions are reported nowhere (fine for development). Set it
++    # to your project DSN in production. Never logged, never returned by an API.
++    sentry_dsn: str = ""
++
++    # Log level (DEBUG|INFO|WARNING|ERROR) and renderer. Production defaults to
++    # machine-readable JSON (see app/core/logging.py); development keeps the
++    # coloured console output. LOG_FORMAT accepts "console" or "json".
++    log_level: str = "INFO"
++    log_format: str = "console"
++
+     @property
+     def is_production(self) -> bool:
+         return self.app_env.lower() in {"production", "prod"}
+diff --git a/app/core/logging.py b/app/core/logging.py
+index 560dbdd..aa95abc 100644
+--- a/app/core/logging.py
++++ b/app/core/logging.py
+@@ -5,15 +5,35 @@ from contextlib import contextmanager
+ 
+ import structlog
+ 
+-structlog.configure(
+-    processors=[
+-        structlog.contextvars.merge_contextvars,
+-        structlog.processors.add_log_level,
+-        structlog.processors.TimeStamper(fmt="iso"),
+-        structlog.dev.ConsoleRenderer(),
+-    ],
+-    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+-)
++from app.core.config import settings
++
++
++def _choose_renderer(log_format: str, is_production: bool):
++    """JSON in production (machine readable); coloured console in development.
++
++    LOG_FORMAT can force either renderer; by default production gets JSON and
++    development gets the console renderer.
++    """
++    use_json = (log_format or "").lower() == "json" or is_production
++    if use_json:
++        return structlog.processors.JSONRenderer()
++    return structlog.dev.ConsoleRenderer()
++
++
++def _configure_logging() -> None:
++    level = getattr(logging, (settings.log_level or "INFO").upper(), logging.INFO)
++    structlog.configure(
++        processors=[
++            structlog.contextvars.merge_contextvars,
++            structlog.processors.add_log_level,
++            structlog.processors.TimeStamper(fmt="iso"),
++            _choose_renderer(settings.log_format, settings.is_production),
++        ],
++        wrapper_class=structlog.make_filtering_bound_logger(level),
++    )
++
++
++_configure_logging()
+ 
+ log = structlog.get_logger()
+ 
+@@ -26,4 +46,4 @@ def timed(label: str, **ctx):
+         yield
+     finally:
+         elapsed_ms = (time.perf_counter() - start) * 1000
+-        log.info("timing", stage=label, ms=round(elapsed_ms, 1), **ctx)
+\ No newline at end of file
++        log.info("timing", stage=label, ms=round(elapsed_ms, 1), **ctx)
+diff --git a/app/main.py b/app/main.py
+index d1ae6dc..1da0fa6 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -1,7 +1,11 @@
++import os
+ from contextlib import asynccontextmanager
+ 
+ from fastapi import FastAPI
+ from fastapi.middleware.cors import CORSMiddleware
++from fastapi.responses import FileResponse, JSONResponse
++from fastapi.staticfiles import StaticFiles
++from sqlalchemy import text
+ 
+ from app.api.auth_routes import router as auth_router
+ from app.api.appointment_routes import (
+@@ -23,6 +27,19 @@ from app.db.session import get_engine
+ from app.channels.messaging import router as channels_router
+ from app.telephony.twilio_handler import router as telephony_router
+ 
++# Observability: Sentry error reporting is optional and off unless a DSN is
++# configured. Initialised at import time so it covers startup failures too.
++if settings.sentry_dsn:
++    import sentry_sdk
++
++    sentry_sdk.init(
++        dsn=settings.sentry_dsn,
++        environment=settings.app_env,
++        # Keep a small trace sample in production; none in dev/test.
++        traces_sample_rate=0.1 if settings.is_production else 0.0,
++        send_default_pii=False,
++    )
++
+ 
+ @asynccontextmanager
+ async def lifespan(app: FastAPI):
+@@ -125,4 +142,65 @@ app.include_router(api_router)
+ 
+ @app.get("/health")
+ async def health():
+-    return {"status": "ok"}
+\ No newline at end of file
++    return {"status": "ok"}
++
++
++@app.get("/health/ready")
++async def readiness():
++    """Readiness probe: the process is up AND the database answers.
++
++    Distinct from /health (liveness): a load balancer routes traffic only to
++    nodes whose /health/ready returns 200, so a node that lost its database
++    stops receiving work instead of failing every request.
++    """
++    try:
++        async with get_engine().connect() as conn:
++            await conn.execute(text("SELECT 1"))
++    except Exception as exc:  # noqa: BLE001 - any DB failure means "not ready"
++        log.error("readiness.database_unreachable", error=str(exc))
++        return JSONResponse(
++            status_code=503,
++            content={"status": "unavailable", "database": "unreachable"},
++        )
++    return {"status": "ready", "database": "ok"}
++
++
++def _mount_dashboard_if_built(app: FastAPI, dist_dir: str | None = None) -> None:
++    """Serve the built dashboard when it is present in the image.
++
++    The React build is a separate stage in the Dockerfile. When it exists
++    (production image) its static assets are mounted and any non-API path falls
++    back to index.html so client-side routes (e.g. /agent) survive a refresh.
++    In dev/test the dist directory does not exist and the app stays API-only.
++    """
++    if dist_dir is None:
++        dist_dir = os.path.abspath(
++            os.path.join(os.path.dirname(__file__), "..", "dashboard", "dist")
++        )
++    index_file = os.path.join(dist_dir, "index.html")
++    if not os.path.isfile(index_file):
++        return
++
++    assets_dir = os.path.join(dist_dir, "assets")
++    if os.path.isdir(assets_dir):
++        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
++
++    @app.get("/{full_path:path}", include_in_schema=False)
++    async def _spa_fallback(full_path: str):
++        # Never let the SPA shell swallow unknown API/telephony/auth paths -- a
++        # typo'd client call must 404 (JSON), not receive an HTML 200.
++        if full_path.startswith(("api/", "auth/", "telephony/", "channels/", "health")):
++            return JSONResponse(status_code=404, content={"detail": "Not found"})
++        # API/telephony/auth paths are handled by the routers above; anything
++        # else maps to a real file when one exists, otherwise the SPA shell.
++        candidate = os.path.normpath(os.path.join(dist_dir, full_path))
++        if (
++            full_path
++            and os.path.isfile(candidate)
++            and os.path.abspath(candidate).startswith(os.path.abspath(dist_dir))
++        ):
++            return FileResponse(candidate)
++        return FileResponse(index_file)
++
++
++_mount_dashboard_if_built(app)
+\ No newline at end of file
+diff --git a/docker-compose.prod.yml b/docker-compose.prod.yml
+new file mode 100644
+index 0000000..df3a9ab
+--- /dev/null
++++ b/docker-compose.prod.yml
+@@ -0,0 +1,60 @@
++# Production compose: no source bind-mounts, no --reload, explicit healthchecks
++# and a persistent knowledge volume. The dev compose (docker-compose.yml) keeps
++# hot-reload and bind mounts for local iteration.
++#
++#   docker compose -f docker-compose.prod.yml up -d --build
++#
++# Requires a .env next to this file (see .env.example): APP_ENV=production,
++# JWT_SECRET, SECRET_KEY, TWILIO_*, at least one LLM key, ELEVENLABS_API_KEY,
++# DEEPGRAM_API_KEY, CRM_ENCRYPTION_KEYS, and a real embedding provider.
++services:
++  db:
++    image: postgres:16-alpine
++    restart: unless-stopped
++    environment:
++      POSTGRES_USER: ${POSTGRES_USER:-voxdesk}
++      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-voxdesk}
++      POSTGRES_DB: ${POSTGRES_DB:-voxdesk}
++    volumes:
++      - pgdata:/var/lib/postgresql/data
++    healthcheck:
++      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-voxdesk}"]
++      interval: 5s
++      timeout: 5s
++      retries: 10
++
++  api:
++    build: .
++    restart: unless-stopped
++    env_file: .env
++    environment:
++      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-voxdesk}:${POSTGRES_PASSWORD:-voxdesk}@db:5432/${POSTGRES_DB:-voxdesk}
++    ports:
++      - "8000:8000"
++    volumes:
++      - ./secrets:/srv/secrets:ro
++      - knowledge:/srv/var/knowledge
++    depends_on:
++      db:
++        condition: service_healthy
++
++  scheduler:
++    build: .
++    restart: unless-stopped
++    env_file: .env
++    environment:
++      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-voxdesk}:${POSTGRES_PASSWORD:-voxdesk}@db:5432/${POSTGRES_DB:-voxdesk}
++    # Same image as the API, but run the background worker instead of the
++    # entrypoint (no uvicorn, no migrations -- the API already migrated).
++    entrypoint: ["python", "-m", "scripts.scheduler"]
++    volumes:
++      - ./secrets:/srv/secrets:ro
++    depends_on:
++      db:
++        condition: service_healthy
++      api:
++        condition: service_started
++
++volumes:
++  pgdata:
++  knowledge:
+diff --git a/docs/DEPLOYMENT.md b/docs/DEPLOYMENT.md
+new file mode 100644
+index 0000000..1ccb6d3
+--- /dev/null
++++ b/docs/DEPLOYMENT.md
+@@ -0,0 +1,62 @@
++# VoxDesk — Deployment (staging & production)
++
++## What runs in production
++
++Three containers (see `docker-compose.prod.yml`):
++
++| Service | Job | Notes |
++|---|---|---|
++| `db` | PostgreSQL 16 | Persistent volume `pgdata` |
++| `api` | FastAPI + built dashboard | Entrypoint runs `alembic upgrade head` first |
++| `scheduler` | Background worker | Reminders, campaigns, CRM sync, knowledge ingestion, billing reconciliation |
++
++## Prerequisites
++
++1. A `.env` next to the compose file (start from `.env.example`). In production you MUST set:
++   - `APP_ENV=production`
++   - `SECRET_KEY`, `JWT_SECRET` (≥32 chars, `openssl rand -hex 32`)
++   - `PUBLIC_BASE_URL=https://…` (used for Twilio `wss://` and webhooks)
++   - `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_NUMBER`
++   - `DEEPGRAM_API_KEY`; at least one of `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY`
++   - `ELEVENLABS_API_KEY`
++   - `CRM_ENCRYPTION_KEYS` (application-level encryption for stored CRM credentials)
++   - `KNOWLEDGE_EMBEDDING_PROVIDER` set to a real provider (not `hashing`)
++   - `SENTRY_DSN` (recommended) — the app boots without it, but you get no error reporting
++2. `./secrets/google_service_account.json` for Google Calendar (path from `GOOGLE_CREDENTIALS_JSON`).
++3. The app **refuses to start** in production with insecure configuration
++   (`Settings.validate_security()`), and **never** creates schema itself — Alembic is the sole
++   schema owner.
++
++## Start
++
++```bash
++docker compose -f docker-compose.prod.yml up -d --build
++docker compose -f docker-compose.prod.yml logs -f api
++```
++
++## Health checks
++
++- `/health` — liveness (process up)
++- `/health/ready` — readiness (database reachable); returns **503** when the DB is down
++
++## One-time bootstrap
++
++```bash
++# after migrations have run, create the first owner for a tenant
++docker compose -f docker-compose.prod.yml exec -T api python -m scripts.create_owner \
++  --tenant-id <uuid> --email you@example.com
++# (password is read from VOXDESK_OWNER_PASSWORD or prompted)
++```
++
++## TLS / reverse proxy
++
++The API trusts `X-Forwarded-*` from its proxy (`--proxy-headers`, see `scripts/entrypoint.sh`).
++Put a TLS terminator (nginx/Caddy/ALB) in front; restrict `FORWARDED_ALLOW_IPS` to the proxy in
++hardened setups. Without `https://` on `PUBLIC_BASE_URL`, Twilio Media Streams (`wss://`) and
++signature validation will be wrong and production boot will refuse the config.
++
++## CI
++
++`.github/workflows/ci.yml` runs on every push to `main` and every PR:
++backend lint + tests · frontend tests + build · a **PostgreSQL migration smoke test**
++(`alembic upgrade head` + `downgrade base` round trip) so SQLite-only DDL bugs surface before deploy.
+diff --git a/requirements.txt b/requirements.txt
+index c0108b3..9f3f94f 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -69,6 +69,7 @@ python-docx==1.2.0
+ # ---- Ops ----
+ structlog==24.4.0
+ sentry-sdk==2.19.2
++aiofiles==25.1.0            # FastAPI StaticFiles serving the built dashboard
+ 
+ # ---- Dev ----
+ pytest==8.3.4
+diff --git a/scripts/entrypoint.sh b/scripts/entrypoint.sh
+new file mode 100755
+index 0000000..e1772f1
+--- /dev/null
++++ b/scripts/entrypoint.sh
+@@ -0,0 +1,22 @@
++#!/bin/sh
++# Production entrypoint: migrate, then serve.
++#
++# Alembic is the sole schema owner in production. The application never runs
++# Base.metadata.create_all when APP_ENV=production, so the schema MUST be
++# brought up to date here before any traffic arrives.
++set -e
++
++alembic upgrade head
++
++# uvicorn production defaults:
++#   --workers            : one per CPU core (override with WEB_CONCURRENCY)
++#   --proxy-headers      : trust X-Forwarded-Proto/Host from the TLS terminator
++#                          so PUBLIC_BASE_URL, wss:// and Twilio signatures work
++#   --forwarded-allow-ips: restrict which proxies are trusted (default "*" for
++#                          single-proxy setups; tighten in hardened deployments)
++exec uvicorn app.main:app \
++  --host 0.0.0.0 \
++  --port 8000 \
++  --workers "${WEB_CONCURRENCY:-2}" \
++  --proxy-headers \
++  --forwarded-allow-ips "${FORWARDED_ALLOW_IPS:-*}"
+diff --git a/tests/test_production_infra.py b/tests/test_production_infra.py
+new file mode 100644
+index 0000000..8c2f203
+--- /dev/null
++++ b/tests/test_production_infra.py
+@@ -0,0 +1,139 @@
++"""
++Step 9 — production infrastructure: readiness probe, observability wiring, and
++serving of the built dashboard.
++
++Deterministic by design: no real Postgres is required. Database reachability
++is exercised by swapping the engine behind the readiness probe.
++"""
++from __future__ import annotations
++
++import pathlib
++
++import pytest
++from fastapi import FastAPI
++from httpx import ASGITransport, AsyncClient
++from sqlalchemy.ext.asyncio import create_async_engine
++
++from app.core.config import Settings
++from app.main import app as voxdesk_app
++
++
++# ------------------------------------------------------------ readiness ---
++
++@pytest.mark.asyncio
++async def test_liveness_endpoint_returns_ok():
++    async with AsyncClient(
++        transport=ASGITransport(app=voxdesk_app), base_url="http://test"
++    ) as ac:
++        r = await ac.get("/health")
++    assert r.status_code == 200
++    assert r.json()["status"] == "ok"
++
++
++@pytest.mark.asyncio
++async def test_readiness_ok_when_database_is_reachable(monkeypatch):
++    eng = create_async_engine("sqlite+aiosqlite:///:memory:")
++    monkeypatch.setattr("app.main.get_engine", lambda: eng)
++    try:
++        async with AsyncClient(
++            transport=ASGITransport(app=voxdesk_app), base_url="http://test"
++        ) as ac:
++            r = await ac.get("/health/ready")
++        assert r.status_code == 200
++        assert r.json() == {"status": "ready", "database": "ok"}
++    finally:
++        await eng.dispose()
++
++
++@pytest.mark.asyncio
++async def test_readiness_unavailable_when_database_is_down(monkeypatch):
++    eng = create_async_engine(
++        "postgresql+asyncpg://x:x@127.0.0.1:1/x", connect_args={"timeout": 1}
++    )
++    monkeypatch.setattr("app.main.get_engine", lambda: eng)
++    try:
++        async with AsyncClient(
++            transport=ASGITransport(app=voxdesk_app), base_url="http://test"
++        ) as ac:
++            r = await ac.get("/health/ready")
++        assert r.status_code == 503
++        assert r.json()["database"] == "unreachable"
++    finally:
++        await eng.dispose()
++
++
++# ------------------------------------------------------- observability wiring ---
++
++def test_sentry_dsn_defaults_to_empty():
++    assert Settings().sentry_dsn == ""
++
++
++def test_logging_defaults():
++    assert Settings().log_level == "INFO"
++    assert Settings().log_format == "console"
++
++
++def test_renderer_selection():
++    from app.core.logging import _choose_renderer
++
++    import structlog
++
++    assert isinstance(_choose_renderer("console", True), structlog.processors.JSONRenderer)
++    assert isinstance(_choose_renderer("json", False), structlog.processors.JSONRenderer)
++    assert isinstance(_choose_renderer("console", False), structlog.dev.ConsoleRenderer)
++
++
++def test_sentry_init_is_guarded_by_dsn():
++    """Structural guarantee: Sentry only initialises when SENTRY_DSN is set."""
++    source = pathlib.Path("app/main.py").read_text()
++    assert "if settings.sentry_dsn:" in source
++    assert "sentry_sdk.init(" in source
++
++
++# ------------------------------------------------------------ dashboard ---
++
++def test_dashboard_mount_is_gated_on_dist_presence():
++    """A fresh checkout (no dist) stays API-only; the image (with dist) serves."""
++    source = pathlib.Path("app/main.py").read_text()
++    assert "_mount_dashboard_if_built" in source
++    assert "_mount_dashboard_if_built(app)" in source
++
++
++def test_dashboard_helper_does_nothing_without_dist(tmp_path):
++    from app.main import _mount_dashboard_if_built
++
++    probe = FastAPI()
++    missing = tmp_path / "no-dist-here"
++    _mount_dashboard_if_built(probe, dist_dir=str(missing))
++    assert not any(r.path.startswith("/assets") for r in probe.routes)
++
++
++@pytest.mark.asyncio
++async def test_dashboard_spa_is_served_when_dist_exists(tmp_path):
++    from app.main import _mount_dashboard_if_built
++
++    dist = tmp_path / "dist"
++    (dist / "assets").mkdir(parents=True)
++    (dist / "index.html").write_text("<html>voxdesk-shell</html>")
++    (dist / "assets" / "app.js").write_text("// app")
++
++    probe = FastAPI()
++    _mount_dashboard_if_built(probe, dist_dir=str(dist))
++
++    async with AsyncClient(transport=ASGITransport(app=probe), base_url="http://test") as ac:
++        root = await ac.get("/")
++        assert root.status_code == 200
++        assert "voxdesk-shell" in root.text
++
++        # Client-side routes fall back to the SPA shell, not a 404.
++        deep = await ac.get("/agent")
++        assert deep.status_code == 200
++        assert "voxdesk-shell" in deep.text
++
++        # Real static assets are served.
++        asset = await ac.get("/assets/app.js")
++        assert asset.status_code == 200
++
++        # Unknown API paths 404 instead of being swallowed by the SPA shell.
++        bad_api = await ac.get("/api/definitely-not-real")
++        assert bad_api.status_code == 404
+-- 
+2.47.3
+

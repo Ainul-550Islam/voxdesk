@@ -1,0 +1,112 @@
+name: ci
+
+# The default gate for every push and pull request. Real external-provider
+# tests are DELIBERATELY excluded (see real-integrations.yml) — nothing in
+# this file may touch the network beyond dependency installation.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: voxdesk
+          POSTGRES_PASSWORD: voxdesk-ci
+          POSTGRES_DB: voxdesk_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U voxdesk"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio aiosqlite httpx ruff
+
+      - name: Lint
+        run: ruff check app scripts tests
+
+      # Migration round trip against REAL Postgres: upgrade to head, all the
+      # way back to base, and up again. A migration that cannot go backwards
+      # fails release here, not during a 3am rollback.
+      - name: Migration round trip
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+          alembic upgrade head
+        env:
+          DATABASE_URL: postgresql+asyncpg://voxdesk:voxdesk-ci@localhost:5432/voxdesk_ci
+
+      # Everything except the opt-in real-provider marker.
+      - name: Tests
+        run: python -m pytest -q -m "not real_provider"
+
+  gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache-dependency-path: services/realtime/gateway-go/go.sum
+
+      - name: Go tests (with the race detector)
+        working-directory: services/realtime/gateway-go
+        run: |
+          go vet ./...
+          go test -race -count=1 ./...
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install, test, build
+        working-directory: dashboard
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+      # Shipped dependencies only; the accepted dev-only Vitest advisory is
+      # documented in docs/DEPLOYMENT.md §10.
+      - name: Audit production dependencies
+        working-directory: dashboard
+        run: npm audit --omit=dev --audit-level=high
+
+  image:
+    needs: [backend, gateway, frontend]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Full-context build: if .dockerignore regresses and a secret can reach
+      # the build, this step is where it would surface.
+      - name: Build the API image
+        run: docker build . -t voxdesk-api:ci
+
+      - name: Build the realtime gateway image
+        run: docker build services/realtime/gateway-go -t voxdesk-realtime-gateway:ci

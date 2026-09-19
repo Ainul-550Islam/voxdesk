@@ -1,0 +1,129 @@
+syntax = "proto3";
+
+package voxdesk.contracts.v1;
+
+import "google/protobuf/timestamp.proto";
+import "voxdesk/contracts/v1/common.proto";
+
+option go_package = "voxdesk/contracts/gen/go/contractsv1";
+
+// ===========================================================================
+// Enums
+//
+// The member names below are deliberately identical to the Python enum member
+// names in app/db/models.py, because SQLAlchemy persists the enum member NAME
+// (not the value) into PostgreSQL. scripts/verify_contracts.py cross-checks
+// this vocabulary against app/db/models.py so the wire contract and the stored
+// vocabulary can never drift apart silently.
+// ===========================================================================
+
+// Mirrors app.db.models.CallStatus. *_UNSPECIFIED is the proto3 zero value and
+// is never persisted.
+enum CallStatus {
+  CALL_STATUS_UNSPECIFIED = 0;
+  CALL_STATUS_RINGING = 1;
+  CALL_STATUS_IN_PROGRESS = 2;
+  CALL_STATUS_COMPLETED = 3;
+  CALL_STATUS_FAILED = 4;
+  CALL_STATUS_NO_ANSWER = 5;
+  CALL_STATUS_TRANSFERRED = 6;
+}
+
+// Mirrors app.db.models.TransferState. Transfer state is tracked separately
+// from CallStatus because a call can be IN_PROGRESS while a transfer is
+// mid-flight. Moving out of NONE is also the idempotency lock that stops a
+// second tool call from dialing the human twice.
+enum TransferState {
+  TRANSFER_STATE_UNSPECIFIED = 0;
+  TRANSFER_STATE_NONE = 1;
+  TRANSFER_STATE_REQUESTED = 2;
+  TRANSFER_STATE_DIALING = 3;
+  TRANSFER_STATE_CONNECTED = 4;
+  TRANSFER_STATE_FAILED = 5;
+}
+
+// Mirrors app.db.models.CallDirection.
+enum CallDirection {
+  CALL_DIRECTION_UNSPECIFIED = 0;
+  CALL_DIRECTION_INBOUND = 1;
+  CALL_DIRECTION_OUTBOUND = 2;
+}
+
+// ===========================================================================
+// Messages
+// ===========================================================================
+
+// Emitted once when a call session is created. Carries the identifiers the
+// rest of the platform already uses: call_sid is the provider (Twilio) SID;
+// call_id is the internal UUID from app.db.models.Call.
+message SessionStarted {
+  TenantContext tenant = 1;
+  Uuid call_id = 2;
+  string call_sid = 3;
+  CallDirection direction = 4;
+  string from_number = 5;
+  string to_number = 6;
+  google.protobuf.Timestamp started_at = 7;
+}
+
+// Emitted whenever Call.status changes. `failure_reason` is only meaningful
+// for FAILED / NO_ANSWER and uses the app.db.models.Call.failure_reason
+// vocabulary ("busy", "no-answer", ...).
+message SessionStatusChanged {
+  TenantContext tenant = 1;
+  Uuid call_id = 2;
+  CallStatus status = 3;
+  optional string failure_reason = 4;
+  google.protobuf.Timestamp ended_at = 5;
+  double duration_seconds = 6;
+}
+
+// A human-escalation request. `destination` and `reason` mirror
+// app.db.models.Call.transfer_destination / transfer_reason; `attempts`
+// mirrors transfer_attempts.
+message TransferRequested {
+  TenantContext tenant = 1;
+  Uuid call_id = 2;
+  string destination = 3;
+  string reason = 4;
+  int32 attempts = 5;
+}
+
+// Emitted whenever Call.transfer_state changes, carrying the failure detail
+// when the escalation could not be completed and the wall-clock times that
+// mirror the transfer_*_at columns on app.db.models.Call.
+message TransferStateChanged {
+  TenantContext tenant = 1;
+  Uuid call_id = 2;
+  TransferState state = 3;
+  optional string error = 4;
+  google.protobuf.Timestamp requested_at = 5;
+  google.protobuf.Timestamp started_at = 6;
+  google.protobuf.Timestamp completed_at = 7;
+  google.protobuf.Timestamp failed_at = 8;
+}
+
+// Acknowledgment returned by the session control plane. Every response carries
+// the tenant context so a receiver can assert it is being answered for the
+// tenant it asked about.
+message SessionAck {
+  TenantContext tenant = 1;
+  Uuid call_id = 2;
+  bool accepted = 3;
+  ErrorInfo error = 4;
+}
+
+// ===========================================================================
+// Service
+//
+// The control-plane boundary. Consumed by the Rust session state machine and
+// the Go ops tooling once they exist (roadmap Phases 2 and 5); the Python
+// backend remains authoritative for business logic until shadow-mode parity is
+// proven. Defined now so the boundary is stable before the first non-Python
+// consumer exists.
+// ===========================================================================
+service SessionControl {
+  rpc StartSession(SessionStarted) returns (SessionAck);
+  rpc ReportStatus(SessionStatusChanged) returns (SessionAck);
+  rpc RequestTransfer(TransferRequested) returns (SessionAck);
+}

@@ -1,0 +1,44 @@
+# Build-context hygiene for the API image (docker build .). Two purposes:
+#
+# 1. Secrets must never enter an image layer or its build cache — .env,
+#    secrets/, backups, keys of any stripe. docker-compose.prod.yml mounts
+#    ./secrets read-only at runtime precisely because baking them in is
+#    wrong.
+# 2. Cache control: dependency caches, test artifacts and VCS metadata
+#    change all the time and would bust image layers for nothing.
+#
+# The realtime gateway image has its own build context
+# (services/realtime/gateway-go/) and is unaffected by this file.
+
+.git/
+.gitignore
+.dockerignore
+
+.env
+.env.*
+!.env.example
+!.env.staging.example
+secrets/
+backups/
+recordings/
+*.dump
+*.pem
+*.key
+.netrc
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+
+node_modules/
+dashboard/dist/
+dashboard/node_modules/
+
+tests/
+docs/
+VOXDESK-CODE-REVIEW.md
+services/realtime/
+go/

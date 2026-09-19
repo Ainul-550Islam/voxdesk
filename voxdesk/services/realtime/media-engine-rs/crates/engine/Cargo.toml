@@ -1,0 +1,19 @@
+[package]
+name = "engine"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+dtls = { path = "../dtls" }
+media = { path = "../media" }
+protocol = { path = "../protocol" }
+routing = { path = "../routing" }
+sessions = { path = "../sessions" }
+signaling = { path = "../signaling" }
+streams = { path = "../streams" }
+transport = { path = "../transport" }
+webrtc = { path = "../webrtc" }
+
+[dev-dependencies]
+streams = { path = "../streams" }

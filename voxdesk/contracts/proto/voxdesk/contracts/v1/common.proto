@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package voxdesk.contracts.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Forward-compatible Go module path for generated code. No Go code is
+// generated yet, but every .proto declares this so the first generator run is
+// deterministic.
+option go_package = "voxdesk/contracts/gen/go/contractsv1";
+
+// A UUID serialized in canonical RFC 4122 text form (36 characters,
+// "8-4-4-4-12"). This matches how the Python API already serializes
+// uuid.UUID values in JSON responses, so existing payloads and this internal
+// bus contract share one vocabulary.
+message Uuid {
+  string value = 1;
+}
+
+// The tenant-isolation header carried by every cross-service message.
+//
+// Receivers MUST take the tenant identity from this field alone and MUST NOT
+// trust a tenant id that appears anywhere else in the message. This is the
+// same rule the HTTP API enforces today: the tenant binding is derived from
+// the authenticated principal and is never read from a request body.
+message TenantContext {
+  Uuid tenant_id = 1;
+  // Distributed-trace id, propagated end to end so every service joins the
+  // existing structured-logging (structlog) trace rather than starting a new
+  // one.
+  string trace_id = 2;
+  // The actor that caused this message (user id, system service name, or
+  // "scheduler"). Feeds the audit trail; never a credential.
+  string actor = 3;
+}
+
+// The idempotency contract carried by every event.
+//
+// A receiver that has already applied the event for
+// (tenant_id, idempotency_key) MUST treat a redelivery as a no-op rather than
+// performing the side effect a second time. This mirrors the database-level
+// UniqueConstraint(tenant_id, idempotency_key) guarantees the platform already
+// relies on (see alembic/versions/0011_side_effect_exactly_once.py and the
+// CRM / billing / appointment idempotency columns).
+message Idempotency {
+  string idempotency_key = 1;
+  google.protobuf.Timestamp emitted_at = 2;
+}
+
+// Mirrors app.db.models.Speaker (canonical values USER / ASSISTANT / SYSTEM).
+// Shared by the session and media contracts, hence declared here rather than
+// in either consumer.
+enum Speaker {
+  SPEAKER_UNSPECIFIED = 0;
+  SPEAKER_USER = 1;
+  SPEAKER_ASSISTANT = 2;
+  SPEAKER_SYSTEM = 3;
+}
+
+// Normalized cross-service error. `message` is always scrubbed before it
+// crosses a boundary and never carries a credential or a raw provider body
+// (the same "no raw provider body" rule the API models apply).
+message ErrorInfo {
+  string code = 1;
+  string message = 2;
+  map<string, string> context = 3;
+}

@@ -1,0 +1,30 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# Fatal rules only for the CI gate; the full default set is applied during the
+# dedicated cleanup pass (18 pre-existing cosmetic violations, see ci.yml).
+select = ["E4", "E7", "E9", "F"]
+
+[tool.pytest.ini_options]
+# NOTE: pytest configuration lives in the repo's pytest.ini (asyncio_mode,
+# testpaths), which takes precedence over this section. Kept empty on purpose;
+# see pytest.ini.
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+check_untyped_defs = false
+warn_unused_ignores = false

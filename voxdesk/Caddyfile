@@ -1,0 +1,92 @@
+# VoxDesk TLS reverse proxy (Caddy v2).
+#
+# Automatic HTTPS: when DOMAIN is a real public hostname, Caddy obtains and
+# renews Let's Encrypt certificates with zero config and redirects HTTP -> HTTPS
+# on the same site. Leave DOMAIN unset to serve plain HTTP on :80 (behind your
+# own load balancer, or for a local smoke test on http://localhost:8080).
+# Certificate verification is never disabled: Caddy's default ACME + cert
+# validation is used unchanged.
+#
+# WebSockets (wss://) for the live voice stream pass through unchanged -- Caddy
+# v2 upgrades WebSocket connections by default, which is what the Twilio Media
+# Streams handshake depends on. Nothing in this file may interfere with that
+# upgrade. Caddy also sets X-Forwarded-For / X-Forwarded-Proto / X-Forwarded-Host
+# automatically, so the API (uvicorn --proxy-headers) sees the real client and
+# scheme for PUBLIC_BASE_URL, wss:// and Twilio signature verification.
+#
+# Observability: the API's metrics endpoint is token-gated at the application
+# layer (METRICS_TOKEN) and is scraped by Prometheus directly over the internal
+# compose network (observability/prometheus.yml targets api:8000) -- it is NOT
+# routed or exposed here. Prometheus, PostgreSQL, Redis and the scheduler have
+# no public path at all.
+#
+# The Caddy admin API is disabled: it is a localhost control plane this
+# deployment does not use, and leaving it on is an unnecessary surface.
+
+{
+	admin off
+}
+
+{$DOMAIN:localhost} {
+	encode zstd gzip
+
+	# Security headers. Strict-Transport-Security is ignored by browsers over
+	# plain HTTP, so it is safe to set unconditionally; it takes effect the
+	# moment the site is served over TLS. The origin (app/main.py security
+	# headers middleware) sets the same headers as a second layer.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+	}
+
+	# Request body ceiling. Knowledge-base uploads allow up to 20 MB
+	# (KNOWLEDGE_MAX_FILE_MB), so leave headroom above that. WebSocket media
+	# streams are unaffected by request_body limits.
+	request_body {
+		max_size 25MB
+	}
+
+	# Realtime gateway: the dashboard's durable WebSocket edge. ONE public
+	# path only, /realtime/ws, rewritten to the gateway's plain /ws; the
+	# gateway's HTTP surface (ingest, metrics, health) is never routed
+	# publicly. Caddy v2 passes the WebSocket Upgrade hop-headers through
+	# unchanged on reverse_proxy — the same property the Twilio media stream
+	# depends on — so no extra transport options are set here either.
+	handle /realtime/ws {
+		rewrite * /ws
+		reverse_proxy realtime-gateway:8790
+	}
+
+	# Everything else goes to the API on 8000 inside the compose network.
+	# Two upstreams total, both enumerated above — there is still no
+	# wildcard/arbitrary upstream path.
+	handle {
+		reverse_proxy api:8000
+	}
+}
+
+# Grafana is exposed through Caddy ONLY on its explicit domain. When
+# GRAFANA_DOMAIN is unset the site address falls back to `grafana.localhost`,
+# which (per RFC 6761) resolves only to loopback -- so no remote client can
+# route to it, and the operator's access path is the host-loopback port
+# 127.0.0.1:3001. Set GRAFANA_DOMAIN=grafana.staging.example.com to serve it on
+# a real hostname; any request that matches the site still requires Grafana
+# sign-in (anonymous access and self-sign-up are disabled in compose).
+{$GRAFANA_DOMAIN:grafana.localhost} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+	}
+
+	request_body {
+		max_size 25MB
+	}
+
+	reverse_proxy grafana:3000
+}

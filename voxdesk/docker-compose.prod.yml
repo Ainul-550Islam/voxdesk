@@ -1,0 +1,249 @@
+# Production compose: no source bind-mounts, no --reload, explicit healthchecks,
+# persistent volumes, and the full observability + backup stack.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Requires a .env next to this file (see .env.example): APP_ENV=production,
+# JWT_SECRET, SECRET_KEY, TWILIO_*, at least one LLM key, ELEVENLABS_API_KEY,
+# DEEPGRAM_API_KEY, CRM_ENCRYPTION_KEYS, a real embedding provider,
+# REALTIME_GATEWAY_INGEST_SECRET (shared by the API publisher and the
+# realtime gateway), and METRICS_ENABLED=true + METRICS_TOKEN for Prometheus.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-voxdesk}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-voxdesk}
+      POSTGRES_DB: ${POSTGRES_DB:-voxdesk}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-voxdesk}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    init: true                # reap uvicorn worker children (PID 1 hygiene)
+    stop_grace_period: 30s    # let in-flight requests drain on SIGTERM
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-voxdesk}:${POSTGRES_PASSWORD:-voxdesk}@db:5432/${POSTGRES_DB:-voxdesk}
+      REDIS_URL: redis://redis:6379/0
+      # Realtime publishing: the API announces durable call facts to the
+      # gateway over the internal network. The environment: block overrides
+      # .env here deliberately — inside compose the publish endpoint is ALWAYS
+      # the gateway service, never a localhost URL from a developer's .env.
+      # The required-secret interpolation fails the whole deploy up front
+      # rather than booting a silently-degraded realtime pair.
+      REALTIME_GATEWAY_URL: http://realtime-gateway:8790
+      REALTIME_GATEWAY_INGEST_SECRET: ${REALTIME_GATEWAY_INGEST_SECRET:?set REALTIME_GATEWAY_INGEST_SECRET in .env (>=16 random chars, shared with the realtime-gateway service)}
+    ports:
+      - "127.0.0.1:8000:8000"   # host-only; public traffic enters via Caddy
+    volumes:
+      - ./secrets:/srv/secrets:ro
+      - knowledge:/srv/var/knowledge
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      realtime-gateway:
+        condition: service_healthy
+
+  # Durable WebSocket edge for the dashboard (Go; see
+  # services/realtime/gateway-go/README.md). Public traffic reaches it only
+  # through Caddy's /realtime/ws route; the host port is loopback-only, same
+  # posture as the API. JWT secret is the SAME one the API signs with — the
+  # gateway verifies dashboard bearer tokens without the API being in the
+  # request loop. The ingest secret is the API→gateway shared secret and must
+  # match the API's REALTIME_GATEWAY_INGEST_SECRET or every publish 401s.
+  realtime-gateway:
+    build: ./services/realtime/gateway-go
+    restart: unless-stopped
+    stop_grace_period: 20s    # let close frames drain; clients reconnect + resubscribe
+    environment:
+      VOXDESK_GATEWAY_PORT: "8790"
+      VOXDESK_GATEWAY_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env — the gateway must verify the API's tokens}
+      VOXDESK_GATEWAY_JWT_ISSUER: ${JWT_ISSUER:-voxdesk}
+      VOXDESK_GATEWAY_JWT_AUDIENCE: ${JWT_AUDIENCE:-voxdesk-api}
+      VOXDESK_GATEWAY_INGEST_SECRET: ${REALTIME_GATEWAY_INGEST_SECRET:?set REALTIME_GATEWAY_INGEST_SECRET in .env (>=16 random chars, shared with the api service)}
+      # Comma-separated exact browser origins allowed to open /ws. Same rule
+      # as the API's CORS_ORIGINS: no wildcards. Dashboard and API share a
+      # public origin, so the production default is the site itself.
+      VOXDESK_GATEWAY_ALLOWED_ORIGINS: ${REALTIME_ALLOWED_ORIGINS:-}
+      # /metrics is token-gated at the gateway; leave unset only if
+      # Prometheus does not scrape this service (observability/prometheus.yml
+      # ships the matching credentials).
+      VOXDESK_GATEWAY_METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # Media-engine control-plane link (Go→Rust). Readiness of THIS service
+      # reflects engine availability, so a dead SFU takes the node out of the
+      # load-balancer's ready pool while web sessions keep serving degraded.
+      VOXDESK_GATEWAY_MEDIA_ENGINE_URL: http://media-engine:9001
+      VOXDESK_GATEWAY_MEDIA_ENGINE_TIMEOUT_SECONDS: ${MEDIA_ENGINE_TIMEOUT_SECONDS:-1.5}
+      # Browser media path: off (P2P relay only) | v1.2 (steer only for
+      # upgraded pairs) | force (all sessions steer; do NOT set until the
+      # dashboard ships wire 1.2). See services/realtime/gateway-go's
+      # internal/signaling/steer.go for the full contract.
+      VOXDESK_GATEWAY_ENGINE_STEER: ${MEDIA_ENGINE_STEER:-off}
+    ports:
+      - "127.0.0.1:8790:8790"  # host-only; public sockets enter via Caddy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8790/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    depends_on:
+      media-engine:
+        condition: service_started
+
+  # Rust media engine (SFU; see services/realtime/media-engine-rs). UDP
+  # media is published on the HOST (browsers ICE against this address —
+  # VOXDESK_PUBLIC_IP must be the host's public v4, set in .env); the
+  # control plane is inter-container only, hit by realtime-gateway.
+  media-engine:
+    build: ./services/realtime/media-engine-rs
+    restart: unless-stopped
+    stop_grace_period: 10s
+    environment:
+      VOXDESK_PORT: "5000"
+      VOXDESK_CONTROL_ADDR: "0.0.0.0:9001"
+      VOXDESK_PUBLIC_IP: ${MEDIA_ENGINE_PUBLIC_IP:?set MEDIA_ENGINE_PUBLIC_IP in .env to the host's public IPv4 (SDP candidate)}
+      VOXDESK_ENGINE_LABEL: ${MEDIA_ENGINE_LABEL:-edge-1}
+      VOXDESK_MAX_PARTICIPANTS: ${MEDIA_ENGINE_MAX_PARTICIPANTS:-64}
+    ports:
+      - "5000:5000/udp"   # public: browser ICE targets this directly
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9001 && echo -e 'GET /v1/health HTTP/1.1\r\nHost: x\r\n\r\n' >&3 && grep -q ready <&3"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  scheduler:
+    build: .
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-voxdesk}:${POSTGRES_PASSWORD:-voxdesk}@db:5432/${POSTGRES_DB:-voxdesk}
+      REDIS_URL: redis://redis:6379/0
+    # Same image as the API, but run the background worker instead of the
+    # entrypoint (no uvicorn, no migrations -- the API already migrated).
+    entrypoint: ["python", "-m", "scripts.scheduler"]
+    volumes:
+      - ./secrets:/srv/secrets:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-voxdesk}
+      POSTGRES_USER: ${POSTGRES_USER:-voxdesk}
+      POSTGRES_DB: ${POSTGRES_DB:-voxdesk}
+    volumes:
+      - ./backups:/backups
+    entrypoint: ["/bin/sh", "-c"]
+    # Nightly pg_dump at 02:00 UTC, keeping the last 14 verified dumps.
+    # Each dump is verified with `pg_restore --list` before it is retained or
+    # synced; a dump that fails verification is logged loudly and left out of
+    # the off-site sync. Restore with scripts/restore.sh. Rclone sync
+    # (optional) if RCLONE_REMOTE is set.
+    command: |
+      while true; do
+        sleep 3600
+        if [ "$$(date +%H)" = "02" ]; then
+          DUMP="/backups/voxdesk-$$(date +%F).dump"
+          if pg_dump -h db -U "$${POSTGRES_USER}" -Fc "$${POSTGRES_DB}" > "$${DUMP}" \
+              && [ -s "$${DUMP}" ] \
+              && pg_restore --list "$${DUMP}" > /dev/null 2>&1; then
+            echo "backup ok: $${DUMP}"
+            ls -1 /backups/*.dump | head -n -14 | xargs -r rm
+            if [ -n "$${RCLONE_REMOTE:-}" ]; then
+              rclone copy /backups "$${RCLONE_REMOTE}"/voxdesk-backups || true
+            fi
+          else
+            echo "BACKUP FAILED (dump unreadable or empty); keeping previous dumps" >&2
+          fi
+        fi
+      done
+    depends_on:
+      db:
+        condition: service_healthy
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    restart: unless-stopped
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./observability/slos.yml:/etc/prometheus/slos.yml:ro
+      - promdata:/prometheus
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-voxdesk}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_ALLOW_ORG_CREATE: "false"
+    volumes:
+      - grafdata:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"   # host-only; public traffic enters via Caddy
+    depends_on:
+      - prometheus
+
+  caddy:
+    image: caddy:2.9-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:-}
+      GRAFANA_DOMAIN: ${GRAFANA_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - realtime-gateway
+
+volumes:
+  pgdata:
+  redisdata:
+  knowledge:
+  promdata:
+  grafdata:
+  caddy_data:
+  caddy_config:

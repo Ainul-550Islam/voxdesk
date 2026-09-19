@@ -1,0 +1,28 @@
+{
+  "name": "voxdesk-dashboard-next",
+  "private": true,
+  "version": "0.1.0",
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "scripts": {
+    "dev": "next dev -H 0.0.0.0",
+    "build": "next build",
+    "start": "next start",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "next": "14.2.35",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "^18.3.0",
+    "jsdom": "24.1.3",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  }
+}

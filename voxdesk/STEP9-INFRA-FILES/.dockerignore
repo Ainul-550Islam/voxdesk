@@ -1,0 +1,22 @@
+# Version control
+.git/
+.gitignore
+.github/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dashboard/node_modules/
+dashboard/dist/
+
+# Secrets & local state -- never bake these into an image
+.env
+secrets/
+recordings/
+var/
